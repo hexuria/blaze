@@ -1045,6 +1045,7 @@ impl Base {
             false,
         )?;
         cg.phases.compile = verify;
+        cg.rustc_futures = known.futures.clone();
         // What nothing reached any more can be reached again by the code compiled now.
         cg.replaced = unchanged;
         // rustc's copies are the ones the base was built against: what they call is in it.

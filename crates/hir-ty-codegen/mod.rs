@@ -519,6 +519,7 @@ impl CodegenUnit {
             theirs,
             unknown,
             left,
+            futures,
             base,
             patching: _,
             counted,
@@ -555,6 +556,7 @@ impl CodegenUnit {
                 hydrate,
             )?;
             cg.patching = patching;
+            cg.rustc_futures = futures.clone();
             let mut compiled = Vec::new();
             let mut skipped = Vec::new();
             let mut failed = Vec::new();
@@ -661,8 +663,28 @@ impl CodegenUnit {
                 true => skipped.iter().filter(|(_, e)| e.no_symbol()).map(|it| it.0).collect(),
                 false => Vec::new(),
             };
-            if failed.is_empty() && (!from_rustc.is_empty() || !generic.is_empty()) {
-                let mut theirs = Some(FxHashSet::default());
+            // An instance of ours can still poll a future rustc's code made: one of a generic
+            // function that awaits a function left to rustc, or that rustc's copy of a
+            // forwarded instance hands back.
+            if failed.is_empty() {
+                let before = futures.len();
+                for root in from_rustc.iter().chain(&generic) {
+                    futures.extend(async_blocks(db, *root).iter().flatten().copied());
+                }
+                for (instance, env) in &cg.envs {
+                    if cg.forwarded.contains(instance) {
+                        futures.extend(made_futures(db, instance, env));
+                    }
+                }
+                if futures.len() != before {
+                    start_over("a future rustc's code makes is polled by code of ours");
+                    continue;
+                }
+            }
+            if failed.is_empty()
+                && (!from_rustc.is_empty() || !generic.is_empty() || !futures.is_empty())
+            {
+                let mut theirs = Some(futures.clone());
                 for root in from_rustc.iter().chain(&generic) {
                     let blocks = async_blocks(db, *root).clone();
                     theirs = theirs.zip(blocks).map(|(mut all, blocks)| {
@@ -849,6 +871,9 @@ pub struct Rejections {
     unknown: FxHashSet<Crate>,
     /// Roots given up on because a function left to rustc handles the same future.
     left: FxHashSet<FunctionId>,
+    /// The `async` blocks whose futures rustc's code makes: a poll or a drop of ours would read
+    /// them as laid out by the other compiler.
+    futures: FxHashSet<salsa::Id>,
     /// Whether to answer an edit with a patch for the object of the last full build.
     pub patching: bool,
     /// Whether rustc compiles a crate that uses the ones built, as it does the examples of a
@@ -914,6 +939,7 @@ impl Rejections {
         self.theirs.clear();
         self.unknown.clear();
         self.left.clear();
+        self.futures.clear();
     }
 
     /// Notes that a file changed in the bodies of functions alone, none of which the rest of
@@ -1072,6 +1098,8 @@ struct ObjectCodegen<'a, 'db> {
     ahead: FxHashSet<(Instance, StoredParamEnvAndCrate)>,
     /// The instances that call rustc's copy instead of having code of their own.
     forwarded: FxHashSet<Instance>,
+    /// [`Rejections::futures`] as the round started.
+    rustc_futures: FxHashSet<salsa::Id>,
     /// Whether instances and statics get names another object can refer to.
     patching: bool,
     /// The object this one is a patch for, and what of it is no longer what the source says.
@@ -1955,6 +1983,19 @@ fn coroutine_instance<'db>(
 /// has to come from the same compiler.
 #[salsa::tracked(returns(ref))]
 fn async_blocks<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Option<FxHashSet<salsa::Id>> {
+    let Ok((body, env)) = root_body(db, func) else {
+        return (!infers_a_future(db, func)).then(FxHashSet::default);
+    };
+    held_blocks(db, body, env)
+}
+
+/// The `async` blocks whose futures `body` holds, itself or in the closures and blocks it
+/// holds, or `None` when one of those can't be read.
+fn held_blocks<'db>(
+    db: &'db dyn HirDatabase,
+    body: &MirBody<'db>,
+    env: ParamEnvAndCrate<'db>,
+) -> Option<FxHashSet<salsa::Id>> {
     struct Collector<'db>(Vec<Ty<'db>>);
     impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for Collector<'db> {
         type Result = ();
@@ -1968,7 +2009,6 @@ fn async_blocks<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Option<FxHas
             rustc_type_ir::TypeSuperVisitable::super_visit_with(&ty, self)
         }
     }
-    let (body, env) = root_body(db, func).ok()?;
     let (mut found, mut seen) = (FxHashSet::default(), FxHashSet::default());
     let mut bodies = vec![body];
     while let Some(body) = bodies.pop() {
@@ -2010,6 +2050,114 @@ fn async_blocks<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Option<FxHas
         }
     }
     Some(found)
+}
+
+/// Whether a type inferred in `func`'s body is or holds a future, an `impl Trait` included:
+/// for a body without MIR, which then holds no future when this is `false`.
+fn infers_a_future(db: &dyn HirDatabase, func: FunctionId) -> bool {
+    struct Finder<'db> {
+        interner: DbInterner<'db>,
+        seen: FxHashSet<Ty<'db>>,
+        found: bool,
+    }
+    impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for Finder<'db> {
+        type Result = ();
+
+        fn visit_ty(&mut self, ty: Ty<'db>) {
+            if self.found || !self.seen.insert(ty) {
+                return;
+            }
+            match ty.kind() {
+                TyKind::Coroutine(..) | TyKind::CoroutineClosure(..) => self.found = true,
+                TyKind::Alias(rustc_type_ir::AliasTy {
+                    kind: rustc_type_ir::AliasTyKind::Opaque { def_id },
+                    args,
+                    ..
+                }) => {
+                    let hidden = rustc_type_ir::Interner::type_of(self.interner, def_id.into())
+                        .instantiate(self.interner, args)
+                        .skip_norm_wip();
+                    // What its defining body did not tell is polled as a future only when it is
+                    // declared one.
+                    if matches!(hidden.kind(), TyKind::Error(_)) {
+                        let future = self.interner.lang_items().Future;
+                        let bounds =
+                            rustc_type_ir::Interner::item_bounds(self.interner, def_id.into());
+                        self.found = bounds.skip_binder().into_iter().any(|clause| {
+                            rustc_type_ir::inherent::Clause::as_trait_clause(clause)
+                                .is_some_and(|it| Some(it.skip_binder().def_id().0) == future)
+                        });
+                    } else {
+                        self.visit_ty(hidden);
+                    }
+                }
+                _ => rustc_type_ir::TypeSuperVisitable::super_visit_with(&ty, self),
+            }
+        }
+    }
+    let infer = InferenceResult::of(db, DefWithBodyId::from(func));
+    let interner = DbInterner::new_with(db, func.krate(db));
+    let mut finder = Finder { interner, seen: FxHashSet::default(), found: false };
+    for ty in infer.expression_types().map(|it| it.1).chain(infer.pattern_types().map(|it| it.1)) {
+        rustc_type_ir::TypeVisitable::visit_with(&ty, &mut finder);
+    }
+    finder.found
+}
+
+/// The `async` blocks whose futures rustc's copy of `instance` holds: those of its body, with
+/// its types filled in, or else those its body names before they are.
+fn made_futures(
+    db: &dyn HirDatabase,
+    instance: &Instance,
+    env: &StoredParamEnvAndCrate,
+) -> FxHashSet<salsa::Id> {
+    let InstanceDef::Fn(func) = instance.def else { return FxHashSet::default() };
+    instance_body(db, instance, env.clone())
+        .ok()
+        .and_then(|body| held_blocks(db, &body, env.as_ref(db)))
+        .unwrap_or_else(|| named_futures(db, func))
+}
+
+/// The `async` blocks of `func`'s body and of the closures and blocks in it, read before its
+/// generic parameters are filled in.
+fn named_futures(db: &dyn HirDatabase, func: FunctionId) -> FxHashSet<salsa::Id> {
+    struct Collector<'db>(Vec<Ty<'db>>);
+    impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for Collector<'db> {
+        type Result = ();
+
+        fn visit_ty(&mut self, ty: Ty<'db>) {
+            if let TyKind::Coroutine(..) | TyKind::Closure(..) | TyKind::CoroutineClosure(..) =
+                ty.kind()
+            {
+                self.0.push(ty);
+            }
+            rustc_type_ir::TypeSuperVisitable::super_visit_with(&ty, self)
+        }
+    }
+    let (mut found, mut seen) = (FxHashSet::default(), FxHashSet::default());
+    let mut bodies: Vec<&MirBody<'_>> = db.mir_body(func.into()).into_iter().collect();
+    while let Some(body) = bodies.pop() {
+        let mut collector = Collector(Vec::new());
+        for (_, local) in body.locals.iter() {
+            rustc_type_ir::TypeVisitable::visit_with(&local.ty.as_ref(), &mut collector);
+        }
+        for ty in collector.0 {
+            if !seen.insert(ty) {
+                continue;
+            }
+            let body = match ty.kind() {
+                TyKind::Coroutine(id, _) => {
+                    found.insert(id.0.as_id());
+                    db.mir_body_for_coroutine(id.0)
+                }
+                TyKind::Closure(id, _) => db.mir_body_for_closure(id.0),
+                TyKind::CoroutineClosure(id, _) => db.mir_body_for_closure(id.0.as_closure(db)),
+                _ => continue,
+            };
+            bodies.extend(body.ok());
+        }
+    }
+    found
 }
 
 /// The functions skipped that rustc has a copy of. One of a crate rustc built nothing of has
@@ -3253,6 +3401,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             homes: home::Homes::default(),
             ahead: FxHashSet::default(),
             forwarded: FxHashSet::default(),
+            rustc_futures: FxHashSet::default(),
             patching: false,
             base,
             replaced: Default::default(),
@@ -4671,6 +4820,9 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         if let Some(Rejected { why, .. }) = self.rejected.get(instance) {
             unsupported!("callee `{name}`: {why}");
         }
+        if self.handles_rustc_future(instance) {
+            unsupported!("callee `{name}`: handles a future rustc lays out");
+        }
         if let Some(&id) = self.instances.get(instance) {
             return Ok(id);
         }
@@ -4903,6 +5055,23 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 }
             }
         }
+    }
+
+    /// Whether `instance` is the poll or the drop of a future rustc's code makes. Everything
+    /// that reads such a future goes through one of those, so refusing them refuses the rest.
+    fn handles_rustc_future(&self, instance: &Instance) -> bool {
+        if self.rustc_futures.is_empty() {
+            return false;
+        }
+        let block = match instance.def {
+            InstanceDef::Coroutine(id) | InstanceDef::CoroutineByMove(id) => Some(id),
+            InstanceDef::DropGlue => match instance.args.as_ref().type_at(0).kind() {
+                TyKind::Coroutine(id, _) => Some(id.0.as_id()),
+                _ => None,
+            },
+            _ => None,
+        };
+        block.is_some_and(|id| self.rustc_futures.contains(&id))
     }
 
     /// Makes `id` a call of the copy of `instance` rustc compiled, when there is one: an

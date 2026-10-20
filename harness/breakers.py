@@ -21,6 +21,8 @@ OPEN |= {"frame_of_array", "frame_of_tables"}
 LEFT = {"caller_in_constant", "empty_array_by_impl", "macro_reads_its_spelling", "fragment_ends_statement"}
 # Crates reduced and not fixed, where rustd says so: a function of these is left to rustc.
 LEFT_CRATES = []
+# Cases about the code around a function rustd has to leave to rustc: that one is meant to be.
+AROUND_LEFT = {"await_left_in_generic"}
 
 
 def main():
@@ -30,7 +32,7 @@ def main():
     fx.rustd_build()
     skipped = [r for rows in fx.reports.values() for r in rows if r[0] == "skipped" and "no rustc symbol for function" not in r[2]]
     left = {name for name in LEFT if any(f"::{name}::" in row[1] for row in skipped)}
-    skipped = [row for row in skipped if not any(f"::{name}::" in row[1] for name in LEFT)]
+    skipped = [row for row in skipped if not any(f"::{name}::" in row[1] for name in LEFT | AROUND_LEFT)]
     for row in skipped:
         print(f"  skipped {row[1]}: {row[2][:300]}")
     names = sys.argv[1:] or subprocess.check_output([*RUNNER, fx.reference], text=True).split()

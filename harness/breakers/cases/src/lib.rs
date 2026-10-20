@@ -20,6 +20,7 @@ cases![
     big_frame,
     big_promoted,
     future_size,
+    await_left_in_generic,
     future_states,
     macro_item_location,
     clmul,
