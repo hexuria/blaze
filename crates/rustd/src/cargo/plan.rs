@@ -144,10 +144,32 @@ impl Plan {
         plan.symbol_files = link.rustc_files();
         std::fs::create_dir_all(dir)?;
         link.give_way(&plan.copies)?;
+        let apple = link.flavor == Flavor::Apple;
         plan.link_cmd =
             link.command(&[&plan.patch, &plan.object], &plan.binary, &dir.join("link.args"))?;
+        if let Some(entitlements) = entitlements(&unit.source).filter(|_| apple) {
+            plan.link_cmd = format!(
+                "{} && codesign --force --sign - --entitlements {} {}",
+                plan.link_cmd,
+                shlex::try_quote(&entitlements.display().to_string())?,
+                shlex::try_quote(&plan.binary.display().to_string())?,
+            );
+        }
         Ok(Ok(plan))
     }
+}
+
+/// The entitlements the package of the crate with root file `source` asks its executable to
+/// be signed with, as `[package.metadata.ra-jit] entitlements = "<file>"` in its manifest.
+/// The executable the daemon links is its own, which cargo copies over the one in the target
+/// directory, so a program that has to be signed is signed by the link.
+fn entitlements(source: &Path) -> Option<PathBuf> {
+    let package = source.ancestors().skip(1).find(|it| it.join("Cargo.toml").is_file())?;
+    let manifest = std::fs::read_to_string(package.join("Cargo.toml")).ok()?;
+    let manifest: toml::Table = toml::from_str(&manifest).ok()?;
+    let file =
+        manifest.get("package")?.get("metadata")?.get("ra-jit")?.get("entitlements")?.as_str()?;
+    Some(package.join(file))
 }
 
 /// Why the tests of `unit` are only right as rustc built them, if they are. rustc's

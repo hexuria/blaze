@@ -156,18 +156,27 @@ struct Import {
     stub: Option<u64>,
 }
 
-/// The signature the linker made: a directory of one hash for each page of the file.
+/// The signature of the file: a directory of one hash for each page of the file, as the
+/// linker makes it (of pages of 4 KB), or as `codesign` does (of 16 KB) with the other
+/// blobs it adds (requirements, entitlements), which the directory has hashes of ahead of
+/// those of the pages and which are kept as they are.
 struct Signature {
     /// The directory up to its hashes.
     directory: Vec<u8>,
     hashes: Vec<u8>,
+    /// How many bytes each hash is of.
+    page: usize,
+    /// The blobs besides the directory, by their kind, in the order they were.
+    others: Vec<(u32, Vec<u8>)>,
+    /// Where among them the directory was.
+    at: usize,
 }
 
 impl Signature {
-    const PAGE: usize = 0x1000;
     const HASH: usize = 32;
-    /// A blob of blobs that holds one, the directory.
-    const WRAPPER: usize = 20;
+    /// The header of the blob of blobs, and what it says of each blob in it.
+    const HEADER: usize = 12;
+    const ENTRY: usize = 8;
     const BLOBS: u32 = 0xfade_0cc0;
     const DIRECTORY: u32 = 0xfade_0c02;
     /// Where the directory says how long it is, how many hashes it has, and of how much.
@@ -180,25 +189,44 @@ impl Signature {
             let field = bytes.get(at..at + 4).context("a signature that ends early")?;
             Ok(u32::from_be_bytes(field.try_into()?))
         };
-        let foreign = "a signature that is not the linker's";
-        ensure!(be(blob, 0)? == Self::BLOBS && be(blob, 8)? == 1 && be(blob, 12)? == 0, foreign);
-        let directory = blob.get(be(blob, 16)? as usize..).context(foreign)?;
+        let foreign = "a signature of another shape than the linker's or codesign's";
+        ensure!(be(blob, 0)? == Self::BLOBS, foreign);
+        let (mut directory, mut others, mut at) = (None, Vec::new(), 0);
+        for nth in 0..be(blob, 8)? as usize {
+            let (kind, offset) =
+                (be(blob, Self::HEADER + nth * 8)?, be(blob, Self::HEADER + nth * 8 + 4)? as usize);
+            let len = be(blob, offset + 4)? as usize;
+            let content = blob.get(offset..offset + len).context(foreign)?;
+            match kind {
+                0 => {
+                    (directory, at) = (Some(content), nth);
+                }
+                // Another directory, of other hashes, would have to be written again too.
+                0x1000.. if kind != 0x10000 => bail!("a signature with a second directory"),
+                _ => others.push((kind, content.to_vec())),
+            }
+        }
+        let directory = directory.context(foreign)?;
         ensure!(be(directory, 0)? == Self::DIRECTORY, foreign);
-        let (hashes, special, slots) =
-            (be(directory, 16)? as usize, be(directory, 24)?, be(directory, Self::SLOTS)? as usize);
-        // Hashes of 32 bytes, SHA-256, of pages of 4 KB.
+        let (hashes, slots) = (be(directory, 16)? as usize, be(directory, Self::SLOTS)? as usize);
+        // Hashes of 32 bytes, SHA-256, of pages of 4 or 16 KB.
         let shape = directory.get(36..40).context(foreign)?;
-        ensure!(special == 0 && shape[0] == 32 && shape[1] == 2 && shape[3] == 12, foreign);
+        ensure!(shape[0] == 32 && shape[1] == 2 && matches!(shape[3], 12 | 14), foreign);
         Ok(Signature {
             directory: directory.get(..hashes).context(foreign)?.to_vec(),
             hashes: directory.get(hashes..hashes + slots * Self::HASH).context(foreign)?.to_vec(),
+            page: 1 << shape[3],
+            others,
+            at,
         })
     }
 
     /// How long the signature of a file is that has `limit` bytes before it.
     fn len(&self, limit: u64) -> usize {
-        let pages = (limit as usize).div_ceil(Self::PAGE);
-        (Self::WRAPPER + self.directory.len() + pages * Self::HASH).next_multiple_of(16)
+        let pages = (limit as usize).div_ceil(self.page);
+        let others: usize = self.others.iter().map(|(_, it)| it.len()).sum();
+        let entries = Self::HEADER + Self::ENTRY * (self.others.len() + 1);
+        (entries + self.directory.len() + pages * Self::HASH + others).next_multiple_of(16)
     }
 
     /// The signature of `file`, whose first `kept` bytes are what the linker wrote but for
@@ -211,21 +239,23 @@ impl Signature {
         added: &[u8],
     ) -> anyhow::Result<Vec<u8>> {
         let limit = kept + added.len() as u64;
-        let kept = kept as usize / Self::PAGE;
+        let page_len = self.page;
+        ensure!(kept as usize % page_len == 0, "a splice behind a page the signature hashes");
+        let kept = kept as usize / page_len;
         let mut hashes =
             self.hashes.get(..kept * Self::HASH).context("a short signature")?.to_vec();
-        let mut page = vec![0; Self::PAGE];
+        let mut page = vec![0; page_len];
         let pages: FxHashSet<usize> = (dirty.iter())
             .flat_map(|(at, bytes)| {
-                *at as usize / Self::PAGE..=(*at as usize + bytes.len().max(1) - 1) / Self::PAGE
+                *at as usize / page_len..=(*at as usize + bytes.len().max(1) - 1) / page_len
             })
             .filter(|page| *page < kept)
             .collect();
         for index in pages {
-            super::read_exact_at(&file, &mut page, (index * Self::PAGE) as u64)?;
+            super::read_exact_at(&file, &mut page, (index * page_len) as u64)?;
             hashes[index * Self::HASH..][..Self::HASH].copy_from_slice(&Sha256::digest(&page));
         }
-        for page in added.chunks(Self::PAGE) {
+        for page in added.chunks(page_len) {
             hashes.extend_from_slice(&Sha256::digest(page));
         }
 
@@ -236,13 +266,28 @@ impl Signature {
         directory[Self::SLOTS..][..4].copy_from_slice(&slots.to_be_bytes());
         let limit = u32::try_from(limit).context("an executable of more than 4 GB")?;
         directory[Self::LIMIT..][..4].copy_from_slice(&limit.to_be_bytes());
-        let mut signature = Vec::with_capacity(self.len(u64::from(limit)));
-        for field in [Self::BLOBS, Self::WRAPPER as u32 + length, 1, 0, Self::WRAPPER as u32] {
+        directory.extend_from_slice(&hashes);
+
+        let mut blobs: Vec<(u32, &[u8])> =
+            self.others.iter().map(|(kind, it)| (*kind, it.as_slice())).collect();
+        blobs.insert(self.at.min(blobs.len()), (0, &directory));
+        let len = self.len(u64::from(limit));
+        let mut signature = Vec::with_capacity(len);
+        let total: usize = blobs.iter().map(|(_, it)| it.len()).sum();
+        let entries = Self::HEADER + Self::ENTRY * blobs.len();
+        for field in [Self::BLOBS, u32::try_from(entries + total)?, blobs.len() as u32] {
             signature.extend_from_slice(&field.to_be_bytes());
         }
-        signature.extend_from_slice(&directory);
-        signature.extend_from_slice(&hashes);
-        signature.resize(self.len(u64::from(limit)), 0);
+        let mut offset = entries;
+        for (kind, blob) in &blobs {
+            signature.extend_from_slice(&kind.to_be_bytes());
+            signature.extend_from_slice(&u32::try_from(offset)?.to_be_bytes());
+            offset += blob.len();
+        }
+        for (_, blob) in &blobs {
+            signature.extend_from_slice(blob);
+        }
+        signature.resize(len, 0);
         Ok(signature)
     }
 }
@@ -521,6 +566,59 @@ impl Image {
             linkedit: content,
             signature,
         })
+    }
+
+    /// Takes the signature of `bytes`, the executable as someone else signed it again after
+    /// the splice `undo` puts back. Each splice starts from the file as it was before any,
+    /// so the hashes of the pages `undo` puts back are of what it puts back.
+    pub(super) fn signed_again(
+        &mut self,
+        bytes: &[u8],
+        undo: &[(u64, Vec<u8>)],
+    ) -> anyhow::Result<()> {
+        let count = u32_at(bytes, 16)?;
+        let (mut at, mut uuid, mut signature) = (HEADER, None, None);
+        for _ in 0..count {
+            match u32_at(bytes, at)? {
+                macho::LC_UUID => uuid = bytes.get(at + 8..at + 24),
+                macho::LC_CODE_SIGNATURE => {
+                    let (offset, len) =
+                        (u32_at(bytes, at + 8)? as usize, u32_at(bytes, at + 12)? as usize);
+                    signature = Some((offset, bytes.get(offset..offset + len)));
+                }
+                _ => {}
+            }
+            at += u32_at(bytes, at + 4)? as usize;
+        }
+        ensure!(
+            uuid.is_some() && uuid == uuid_of(&self.commands).as_ref().map(|it| &it[..]),
+            "the executable was written by someone else"
+        );
+        let (offset, signature) = signature.context("the executable is not signed")?;
+        let mut new = Signature::read(signature.context("the file ends early")?)?;
+        let page = new.page;
+        let pages: FxHashSet<usize> = (undo.iter())
+            .flat_map(|(at, old)| {
+                *at as usize / page..=(*at as usize + old.len().max(1) - 1) / page
+            })
+            .collect();
+        for index in pages {
+            let start = index * page;
+            let end = (start + page).min(offset);
+            let mut content = bytes.get(start..end).context("a short file")?.to_vec();
+            for (at, old) in undo.iter().rev() {
+                let (at, end) = (*at as usize, *at as usize + old.len());
+                let (from, to) = (at.max(start), end.min(start + content.len()));
+                if from < to {
+                    content[from - start..to - start].copy_from_slice(&old[from - at..to - at]);
+                }
+            }
+            let hash =
+                new.hashes.get_mut(index * Signature::HASH..).context("a short signature")?;
+            hash[..Signature::HASH].copy_from_slice(&Sha256::digest(&content));
+        }
+        self.signature = new;
+        Ok(())
     }
 
     fn linkedit(&self) -> &Segment {
@@ -1626,12 +1724,17 @@ pub(super) fn live(
 
 /// The `LC_UUID` of the executable, which names it to a running program.
 pub(super) fn uuid(image: &Image) -> Option<[u8; 16]> {
-    let count = u32_at(&image.commands, 16).ok()?;
+    uuid_of(&image.commands)
+}
+
+/// The `LC_UUID` among the load commands `commands` start with.
+fn uuid_of(commands: &[u8]) -> Option<[u8; 16]> {
+    let count = u32_at(commands, 16).ok()?;
     let mut at = HEADER;
     for _ in 0..count {
-        let size = u32_at(&image.commands, at + 4).ok()? as usize;
-        if u32_at(&image.commands, at).ok()? == macho::LC_UUID {
-            return image.commands.get(at + 8..at + 24)?.try_into().ok();
+        let size = u32_at(commands, at + 4).ok()? as usize;
+        if u32_at(commands, at).ok()? == macho::LC_UUID {
+            return commands.get(at + 8..at + 24)?.try_into().ok();
         }
         at += size;
     }

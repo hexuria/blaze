@@ -196,6 +196,7 @@ impl Baseline {
     /// Brings the executable from what the linker wrote to that with `patch` in place of the
     /// functions it defines. On an error the file may be neither: it has to be linked again.
     pub(crate) fn splice(&mut self, patch: &[u8]) -> anyhow::Result<Spliced> {
+        self.read_again_if_signed()?;
         let (addition, len) = match &self.image {
             Executable::Elf(image) => {
                 let patch = Patch::read(patch, image)?;
@@ -281,6 +282,22 @@ impl Baseline {
             Executable::MachO(image) => macho::uuid(image),
             _ => None,
         }
+    }
+
+    /// Takes the signature of a Mach-O executable that was signed again since we last wrote
+    /// it, as `codesign` does to give it entitlements, for the splices after.
+    fn read_again_if_signed(&mut self) -> anyhow::Result<()> {
+        let Executable::MachO(image) = &mut self.image else { return Ok(()) };
+        let file = File::open(&self.path)?;
+        let stamp = Stamp::of(&file)?;
+        if stamp == self.stamp {
+            return Ok(());
+        }
+        // SAFETY: as in `read`; whoever signed it is through.
+        let bytes = unsafe { memmap2::Mmap::map(&file)? };
+        image.signed_again(&bytes, &self.undo)?;
+        self.stamp = stamp;
+        Ok(())
     }
 
     /// The splice of a wasm module, which is written anew from the linker's each time.
