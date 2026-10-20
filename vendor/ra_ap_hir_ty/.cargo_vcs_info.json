@@ -1,7 +1,0 @@
-{
-  "git": {
-    "sha1": "2ad81e72b7e978cb800dffe1bcce5c9f98032acf",
-    "dirty": true
-  },
-  "path_in_vcs": "crates/hir-ty"
-}
