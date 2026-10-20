@@ -57,7 +57,12 @@ What has been run end to end, on macOS arm64 with Rust 1.99.0: direct calls, tra
 function pointers held by a registry take an edit in about a millisecond, an edit undone puts
 the old code back, a panic in new code unwinds and is caught, a new function can be called, a
 changed struct asks for a restart, a daemon restart or a `cargo build` is noticed, and a signed
-executable stays signed through splices. What is rough:
+executable stays signed through splices.
+
+The program it is made for is den's native app (den-native, about 5,200 functions of its own
+and 190,000 instances): its own code edited while it runs, an edit applied in under a
+millisecond and about a second from saving the file to the program running the new code. See
+[docs/live.md](docs/live.md). What is rough:
 
 - The first edit after the daemon starts writes the whole object (the code of the checkout came
   from the store, and a patch needs code the daemon compiled itself), so the program has to be
@@ -66,6 +71,12 @@ executable stays signed through splices. What is rough:
   build with plain `cargo build` once.
 - Live edits are macOS on AArch64 only; elsewhere `Live::start` says so and the splice on disk
   still works.
+- Crates that disagree on overflow checks (a `[profile.dev.package]` override) share generic
+  instances rustd cannot tell apart, so it refuses them and most of what calls them. Make them
+  agree for the daemon's build with `--config 'profile.dev.package."<crate>".overflow-checks=true'`.
+- A future is laid out by one compiler, so what touches a future of a function left to rustc
+  goes to rustc too, and edits there are not taken live. den-native has a handful of such
+  functions.
 
 The rest of this file is rustd's, from the commit ra-jit forked from (`159f693`), and is true of
 ra-jit too unless a section above says otherwise.

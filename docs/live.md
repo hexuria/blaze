@@ -75,3 +75,18 @@ the empty CMS blob), keeps every blob but the directory, and rewrites the direct
 hashes with its page size (4 KB from the linker, 16 KB from `codesign`). An executable signed
 again between two splices is read again, and the hashes of the pages the last splice put back
 are recomputed from what it put back.
+
+## In den
+
+den's native app takes edits to its own code this way: `just dev --ra-jit` in den builds it
+through the daemon, starts it with `DEN_RA_JIT=1`, watches its crates, builds again after an
+edit, and starts it again when it is asked to. den's module crates keep their own hot reload,
+which ra-jit does not touch. Measured on 2026-10-20 on an M-series Mac:
+
+- a cold build of den-native (5,076 of 5,193 functions of its own compiled, 190,067 instances)
+  takes about 70 to 95 seconds, once per daemon;
+- an edit to a function body is spliced in 1.0 to 1.5 seconds from the save and applied by the
+  running program in 0.4 to 0.6 ms, with no restart;
+- seven crates of den set `overflow-checks = false` for speed, and den's build passes `--config`
+  to make them agree with the rest for the daemon, without which most of den-native went to
+  rustc.
