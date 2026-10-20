@@ -1,10 +1,74 @@
 # ra-jit
 
 ra-jit is a newer version of [rustd](https://github.com/DioxusLabs/rustd), made specifically
-for Indexable's use cases. It is no longer an experiment: it keeps rustd's compiler daemon and
-code generator, and adds what Indexable's programs need on top of them.
+for Indexable's use cases, starting with den's native app. It is no longer an experiment. It
+keeps rustd's compiler daemon and its code generator over rust-analyzer, and adds what those
+programs need: edits that go into the program while it runs, executables that keep their
+entitlements, and fixes for large workspaces.
 
-The rest of this file is rustd's, from the commit ra-jit forked from.
+## What ra-jit adds to rustd
+
+- **Live edits** ([docs/live.md](docs/live.md)). rustd answers an edit with a patch of the
+  functions that changed and splices it into the executable on disk. A program that links
+  [`ra-jit-live`](crates/ra-jit-live) and calls `Live::start` takes the same patch in memory:
+  the daemon lays it out for room the program set aside next to its code, and `Live::poll`
+  maps it there and writes a jump over the entry of each function it replaces. A call, a
+  vtable or a function pointer a library holds all reach the new code. An edit to a type
+  the rest of the program sees can't be applied to the live data, and the program is told to
+  start again; so is a program whose executable was linked again. macOS on AArch64.
+- **Signed executables.** A package that says
+  `[package.metadata.ra-jit] entitlements = "<file>"` gets its executable signed with those
+  entitlements by the daemon's own link, and every splice after keeps the signature: a program
+  that needs `com.apple.security.cs.allow-jit` (JavaScriptCore's JIT, for one) runs as it
+  should from every build.
+- **Large workspaces.** The workspace root is found from any package in it, dep-info is read
+  against it, a crate is judged stale by when rustc last finished it, a build script's
+  checksum freshness no longer stops it, and an `env!` of an unset variable names its crate.
+
+## Use it
+
+Build it as rustd is built ([Build from source](#build-from-source)) and put
+`target/release` on `PATH`. Then, in the program's crate:
+
+```toml
+[dependencies]
+ra-jit-live = { git = "https://github.com/indexable-inc/ra-jit" }
+```
+
+```rust
+let mut live = ra_jit_live::Live::start().ok();
+loop {
+    // Between frames, or wherever nothing of the program's is half done.
+    if let Some(outcome) = live.as_mut().and_then(|it| it.poll()) {
+        eprintln!("ra-jit: {outcome}");
+    }
+    // ...
+}
+```
+
+Run `cargo rustd build` once, wait for `cargo rustd status` to say the program is ready (the
+daemon's own link of it), build again to get that link, and start the program. From then on,
+`cargo rustd build` after each edit puts the change into the running program: the program
+notices the patch within 30 ms and applies it in about a millisecond.
+
+## Status
+
+What has been run end to end, on macOS arm64 with Rust 1.99.0: direct calls, trait objects and
+function pointers held by a registry take an edit in about a millisecond, an edit undone puts
+the old code back, a panic in new code unwinds and is caught, a new function can be called, a
+changed struct asks for a restart, a daemon restart or a `cargo build` is noticed, and a signed
+executable stays signed through splices. What is rough:
+
+- The first edit after the daemon starts writes the whole object (the code of the checkout came
+  from the store, and a patch needs code the daemon compiled itself), so the program has to be
+  started once more.
+- A change to a crate outside the workspace (a path dependency) is not noticed by the daemon:
+  build with plain `cargo build` once.
+- Live edits are macOS on AArch64 only; elsewhere `Live::start` says so and the splice on disk
+  still works.
+
+The rest of this file is rustd's, from the commit ra-jit forked from (`159f693`), and is true of
+ra-jit too unless a section above says otherwise.
 
 ## rustd
 
@@ -24,7 +88,7 @@ another machine.
 It is meant for people and coding agents who build the same code many times, often in several
 worktrees at once.
 
-## Status
+### rustd's status at the fork
 
 This is a prototype, published for the first time. Nobody outside the project has used it.
 Read this section before relying on it.
