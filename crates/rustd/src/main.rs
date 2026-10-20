@@ -196,6 +196,7 @@ impl Args {
         let (mut packages, mut workspace) = (Vec::new(), false);
         let mut all_features = false;
         let mut profile = None;
+        let mut config = Vec::new();
         let mut also = Vec::new();
         let mut target = None;
         while let Some(arg) = args.next() {
@@ -234,6 +235,7 @@ impl Args {
                 }
                 "--release" => profile = Some("release".to_owned()),
                 "--profile" => profile = Some(value()?),
+                "--config" => config.push(value()?),
                 _ if project.is_none() => project = Some(PathBuf::from(arg)),
                 _ => bail!("unexpected argument {arg}"),
             }
@@ -264,6 +266,7 @@ impl Args {
                 workspace,
                 target,
                 dev_deps: cfg_test || dev_deps,
+                config,
             },
             also,
             debug: plan::Described::NOTHING,
@@ -3158,6 +3161,9 @@ fn selected(args: &Args) -> Vec<String> {
     }
     if selection.workspace {
         selected.push("--workspace".to_owned());
+    }
+    for config in &selection.config {
+        selected.extend(["--config".to_owned(), config.clone()]);
     }
     selected
 }

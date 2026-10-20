@@ -32,6 +32,10 @@ pub(crate) struct Selection {
     pub(crate) target: Option<String>,
     /// Whether tests, examples and benchmarks are built, and so what they depend on.
     pub(crate) dev_deps: bool,
+    /// The `--config` values given, which can change a profile or what is built as much as
+    /// the configuration files can.
+    #[serde(default)]
+    pub(crate) config: Vec<String>,
 }
 
 impl Default for Selection {
@@ -45,6 +49,7 @@ impl Default for Selection {
             workspace: false,
             target: None,
             dev_deps: false,
+            config: Vec::new(),
         }
     }
 }
@@ -71,6 +76,9 @@ impl Selection {
         }
         if self.workspace {
             flags.push("--workspace".to_owned());
+        }
+        for config in &self.config {
+            flags.extend(["--config".to_owned(), config.clone()]);
         }
         flags
     }

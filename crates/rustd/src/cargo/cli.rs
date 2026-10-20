@@ -156,6 +156,7 @@ pub(crate) struct Flags {
     pub(crate) all_features: bool,
     pub(crate) no_default_features: bool,
     pub(crate) profile: Option<String>,
+    pub(crate) config: Vec<String>,
     pub(crate) targets: Vec<String>,
     pub(crate) bin: Option<String>,
     pub(crate) example: Option<String>,
@@ -317,6 +318,7 @@ impl Invocation {
             workspace: self.flags.workspace,
             target: self.target(),
             dev_deps: self.subcommand == Subcommand::Test,
+            config: self.flags.config.clone(),
         }
     }
 
@@ -344,6 +346,7 @@ impl Flags {
             "--no-default-features" => self.no_default_features = true,
             "-r" | "--release" => self.profile = Some("release".to_owned()),
             "--profile" => self.profile = owned(),
+            "--config" => self.config.extend(owned()),
             "--target" => self.targets.extend(owned()),
             "--bin" => self.bin = owned(),
             "--example" => self.example = owned(),
