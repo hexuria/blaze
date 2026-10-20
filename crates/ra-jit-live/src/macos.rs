@@ -98,7 +98,7 @@ impl Live {
         let started = started.map_or(0, |it| it.as_millis() as u64);
         let process = Process { pid: std::process::id(), uuid: image.uuid, started, next, end };
         let live = Live {
-            patches: watch(dir.join("patch")),
+            patches: watch(dir.join("patch"), image.uuid),
             dir,
             uuid: image.uuid,
             slide,
@@ -319,8 +319,11 @@ fn forget_exited() {
     }
 }
 
-/// Reads the patch at `path` on a thread of its own each time it is written.
-fn watch(path: PathBuf) -> Receiver<Patch> {
+/// Reads the patch at `path` on a thread of its own each time it is written. A link that
+/// writes another executable where the program's was, which no patch says of when nothing
+/// that links it knew the program (`cargo build`, or a daemon started since), is told as
+/// a patch of that executable.
+fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<Patch> {
     let (send, receive) = std::sync::mpsc::channel();
     let stamp = |path: &PathBuf| {
         let meta = std::fs::metadata(path).ok()?;
@@ -328,11 +331,30 @@ fn watch(path: PathBuf) -> Receiver<Patch> {
     };
     // A patch from before the program started is for another run of it.
     let mut seen: Option<(SystemTime, u64)> = stamp(&path);
+    let executable = std::env::current_exe().ok();
+    let mut linked = executable.as_ref().and_then(stamp);
     std::thread::Builder::new()
         .name("ra-jit-live".to_owned())
         .spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(30));
+                if let Some(executable) = &executable {
+                    let now = stamp(executable);
+                    if now.is_some() && now != linked {
+                        linked = now;
+                        let other = uuid_of(executable).filter(|it| *it != uuid);
+                        if let Some(other) = other {
+                            let why = "the program was linked again".to_owned();
+                            let sequence = SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .map_or(0, |it| it.as_millis() as u64);
+                            let body = Body::Restart(why);
+                            if send.send(Patch { uuid: other, sequence, body }).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
                 let now = stamp(&path);
                 if now.is_none() || now == seen {
                     continue;
@@ -351,6 +373,26 @@ fn watch(path: PathBuf) -> Receiver<Patch> {
         })
         .expect("spawning the thread that watches for edits");
     receive
+}
+
+/// The UUID of the executable at `path`, which its load commands near the start say.
+fn uuid_of(path: &PathBuf) -> Option<[u8; 16]> {
+    use std::io::Read as _;
+    const MAGIC: u32 = 0xfeed_facf;
+    let mut head = Vec::with_capacity(1 << 16);
+    std::fs::File::open(path).ok()?.take(1 << 16).read_to_end(&mut head).ok()?;
+    let u32_at = |at: usize| Some(u32::from_le_bytes(head.get(at..at + 4)?.try_into().ok()?));
+    if u32_at(0)? != MAGIC {
+        return None;
+    }
+    let mut at = 32;
+    for _ in 0..u32_at(16)? {
+        if u32_at(at)? == LC_UUID {
+            return head.get(at + 8..at + 24)?.try_into().ok();
+        }
+        at += u32_at(at + 4)? as usize;
+    }
+    None
 }
 
 fn check(code: i32) -> Result<(), String> {

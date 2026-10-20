@@ -2870,8 +2870,19 @@ fn link(
     // An executable linked with the object as it was is not one to add to, also when the
     // object was written for a request that does not link.
     let rewritten = match splice {
-        Some(binary) if !patched => lock(&LINKED).remove(binary).is_some(),
-        _ => false,
+        Some(binary) if !patched => lock(&LINKED).remove(binary),
+        _ => None,
+    };
+    // So is a program that runs it, which can only be started again.
+    let rewritten = match rewritten.map(Executable::baseline) {
+        Some(old) => {
+            if let Ok(old) = old {
+                live::tell_superseded();
+                live::restart(&old, "the edit changes what the rest of the program sees");
+            }
+            true
+        }
+        None => false,
     };
     let Some(cmd) = cmd else { return Ok(()) };
     let start = Instant::now();
@@ -2882,12 +2893,8 @@ fn link(
         // A program that runs the executable takes the edit in memory too.
         let old = known.as_ref().and_then(|it| it.as_ref().ok());
         live::tell_superseded();
-        match old {
-            Some(baseline) if rewritten => {
-                live::restart(baseline, "the edit changes what the rest of the program sees")
-            }
-            Some(baseline) if baseline.is_of(binary) => live::publish(baseline, patch),
-            _ => {}
+        if let Some(baseline) = old.filter(|it| !rewritten && it.is_of(binary)) {
+            live::publish(baseline, patch);
         }
         let superseded = old.filter(|_| !rewritten).and_then(Baseline::uuid);
         let spliced = match known {
