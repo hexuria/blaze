@@ -65,8 +65,10 @@ const LC_SEGMENT_64: u32 = 0x19;
 const LC_UUID: u32 = 0x1b;
 
 /// How much room is set aside for patches. Each is laid out behind the last, since code of
-/// an earlier one may still be running on some thread.
-const ROOM: u64 = 512 << 20;
+/// an earlier one may still be running on some thread. A large program leaves only what is
+/// between its image and the next library within reach, a few hundred megabytes for one of
+/// half a gigabyte.
+const ROOM: u64 = 256 << 20;
 /// What `adrp` reaches, which is how the code of a patch reaches the program's.
 const REACH: u64 = 4 << 30;
 
@@ -288,9 +290,9 @@ impl Image {
 /// Sets aside the room for patches as near behind the program as is free, for the code
 /// in it to reach all of the program, and says where it is before the slide.
 fn reserve(image: &Image, slide: u64) -> Result<(u64, u64), String> {
-    const STEP: u64 = 64 << 20;
+    const STEP: u64 = 2 << 20;
     let task = unsafe { mach_task_self() };
-    let mut at = (image.end + slide + STEP).next_multiple_of(STEP);
+    let mut at = (image.end + slide).next_multiple_of(STEP);
     while at + ROOM - (image.start + slide) <= REACH {
         let mut address = at;
         // SAFETY: a fixed allocation without OVERWRITE fails where anything is mapped.
