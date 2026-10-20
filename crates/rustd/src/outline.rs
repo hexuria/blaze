@@ -17,7 +17,7 @@ use ide_db::{
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use syntax::{
     AstNode, Edition, SyntaxKind, SyntaxNode, TextRange, WalkEvent,
-    ast::{self, HasAttrs},
+    ast::{self, HasAttrs, HasName},
 };
 use vfs::FileId;
 
@@ -43,14 +43,38 @@ const INERT: &[&str] = &[
 #[derive(Default)]
 pub(crate) struct Outlines {
     files: FxHashMap<FileId, Option<u64>>,
+    /// The types each file defines, as [`types`] has them.
+    types: FxHashMap<FileId, FxHashMap<String, u64>>,
 }
 
 impl Outlines {
     /// Takes note of the files that are about to change, unless they are known already.
     pub(crate) fn before_edit(&mut self, db: &RootDatabase, listed: &Listed, files: &[FileId]) {
+        for &file in files {
+            self.types.entry(file).or_insert_with(|| types(db, file));
+        }
         let new: Vec<_> = files.iter().copied().filter(|it| !self.files.contains_key(it)).collect();
         let outlines = outlines(db, listed, &new);
         self.files.extend(new.into_iter().zip(outlines));
+    }
+
+    /// The types that the files of the edit just applied defined and now define otherwise,
+    /// or no longer. A running program has values laid out as they were.
+    fn types_changed(&mut self, db: &RootDatabase, files: &[FileId]) -> Vec<String> {
+        let mut changed = Vec::new();
+        for &file in files {
+            let now = types(db, file);
+            if let Some(was) = self.types.insert(file, now) {
+                let now = &self.types[&file];
+                changed.extend(
+                    was.into_iter()
+                        .filter(|(name, hash)| now.get(name) != Some(hash))
+                        .map(|it| it.0),
+                );
+            }
+        }
+        changed.sort_unstable();
+        changed
     }
 
     /// For each file of the edit that was just applied, whether nothing changed in it but
@@ -62,6 +86,10 @@ impl Outlines {
         files: Vec<FileId>,
     ) -> Vec<(FileId, bool)> {
         let off = std::env::var_os("RUSTD_NO_BODIES").is_some();
+        let changed = self.types_changed(db, &files);
+        if !changed.is_empty() {
+            crate::live::types_changed(&changed);
+        }
         let outlines = outlines(db, listed, &files);
         let files: Vec<_> = files
             .into_iter()
@@ -127,6 +155,53 @@ fn outlines(db: &RootDatabase, listed: &Listed, files: &[FileId]) -> Vec<Option<
         }
     });
     outlines
+}
+
+/// Each type the file defines, by its kind and name, with a hash of how it is written: the
+/// fields a value of it is laid out by and, of a trait, what its objects' tables hold. A
+/// default body of a trait method, the layout and comments are left out, and attributes
+/// but `repr`.
+fn types(db: &RootDatabase, file: FileId) -> FxHashMap<String, u64> {
+    let edition =
+        relevant_crates(db, file).first().map_or(Edition::CURRENT, |it| it.data(db).edition);
+    let tree = EditionedFileId::new(db, file, edition).parse(db).syntax_node();
+    let mut found = FxHashMap::<String, u64>::default();
+    for node in tree.descendants() {
+        let (kind, name) = if let Some(it) = ast::Struct::cast(node.clone()) {
+            ("struct", it.name())
+        } else if let Some(it) = ast::Enum::cast(node.clone()) {
+            ("enum", it.name())
+        } else if let Some(it) = ast::Union::cast(node.clone()) {
+            ("union", it.name())
+        } else if let Some(it) = ast::TypeAlias::cast(node.clone()) {
+            ("type", it.name())
+        } else if let Some(it) = ast::Trait::cast(node.clone()) {
+            ("trait", it.name())
+        } else {
+            continue;
+        };
+        let Some(name) = name else { continue };
+        let bodies: Vec<TextRange> = (node.descendants())
+            .filter_map(ast::Fn::cast)
+            .filter_map(|it| it.body())
+            .map(|it| it.syntax().text_range())
+            .collect();
+        let mut hasher = FxHasher::default();
+        for token in node.descendants_with_tokens().filter_map(|it| it.into_token()) {
+            if token.kind().is_trivia()
+                || bodies.iter().any(|it| it.contains_range(token.text_range()))
+            {
+                continue;
+            }
+            let attribute = token.parent_ancestors().find_map(ast::Attr::cast);
+            if attribute.is_some_and(|it| it.simple_name().is_none_or(|it| it != "repr")) {
+                continue;
+            }
+            token.text().hash(&mut hasher);
+        }
+        *found.entry(format!("{kind} {name}")).or_default() ^= hasher.finish();
+    }
+    found
 }
 
 /// A hash of everything in the file but the bodies nothing else sees into, or `None` when

@@ -66,6 +66,7 @@ tar = "0.4.44"
 zstd = "0.13.3"
 tikv-jemallocator = { version = "0.5.4", optional = true, features = ["profiling"] }
 tikv-jemalloc-ctl = { version = "0.5.4", optional = true }
+ra-jit-live = { path = "../ra-jit-live" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

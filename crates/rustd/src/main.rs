@@ -8,6 +8,7 @@ mod content;
 mod deps;
 mod doctest;
 mod inputs;
+mod live;
 mod memory;
 mod outline;
 mod plan;
@@ -2878,6 +2879,17 @@ fn link(
     let running = splice.map_or(Ok(false), set_aside)?;
     if let (Some(binary), Some(patch)) = (splice, patch) {
         let known = lock(&LINKED).remove(binary).map(Executable::baseline);
+        // A program that runs the executable takes the edit in memory too.
+        let old = known.as_ref().and_then(|it| it.as_ref().ok());
+        live::tell_superseded();
+        match old {
+            Some(baseline) if rewritten => {
+                live::restart(baseline, "the edit changes what the rest of the program sees")
+            }
+            Some(baseline) if baseline.is_of(binary) => live::publish(baseline, patch),
+            _ => {}
+        }
+        let superseded = old.filter(|_| !rewritten).and_then(Baseline::uuid);
         let spliced = match known {
             _ if rewritten => Err(anyhow::anyhow!("the whole object was written again")),
             _ if running => Err(anyhow::anyhow!("the executable is running")),
@@ -2906,7 +2918,12 @@ fn link(
                 );
                 return Ok(());
             }
-            Err(why) => declined = format!("; not spliced: {why:#}"),
+            Err(why) => {
+                if let Some(uuid) = superseded {
+                    live::superseded(uuid, format!("the program was linked again: {why:#}"));
+                }
+                declined = format!("; not spliced: {why:#}");
+            }
         }
     }
     let linked = shell(cmd).output()?;

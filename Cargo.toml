@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rustd"]
+members = ["crates/rustd", "crates/ra-jit-live"]
 # `rustd-wasm` turns on a feature of `hir-ty` that swaps the code generator's output, which
 # must not be unified into a build of the native crates.
 exclude = ["crates/rustd-wasm", "demo", "harness"]

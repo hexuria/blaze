@@ -80,6 +80,10 @@ pub(crate) struct Baseline {
     baked: Vec<Box<[u8]>>,
     /// What the last splice wrote over, to put back before the next.
     undo: Vec<(u64, Vec<u8>)>,
+    /// What the linker wrote where any splice since has written, by address: a program
+    /// started from a spliced executable has the splice's jumps in memory, and an edit
+    /// that puts a function back as it first was has the linker's bytes put back there.
+    originals: FxHashMap<u64, Vec<u8>>,
     /// What the last splice left behind what the linker wrote, which the next one mostly
     /// writes again as it is.
     left: Left,
@@ -167,7 +171,15 @@ impl Baseline {
                 .collect();
             (image, baked)
         };
-        Ok(Baseline { path, image, baked, undo: Vec::new(), left: Left::default(), stamp })
+        Ok(Baseline {
+            path,
+            image,
+            baked,
+            undo: Vec::new(),
+            originals: FxHashMap::default(),
+            left: Left::default(),
+            stamp,
+        })
     }
 
     pub(crate) fn is_of(&self, binary: &Path) -> bool {
@@ -202,8 +214,8 @@ impl Baseline {
                 return Ok(spliced);
             }
             Executable::MachO(image) => {
-                let Baseline { path, baked, undo, stamp, .. } = self;
-                return macho::splice(image, path, baked, undo, stamp, patch);
+                let Baseline { path, baked, undo, originals, stamp, .. } = self;
+                return macho::splice(image, path, baked, undo, originals, stamp, patch);
             }
         };
 
@@ -247,6 +259,28 @@ impl Baseline {
         let appended = addition.appended.len();
         self.left = Left { appended: Some((addition.offset, addition.appended)), moved };
         Ok(Spliced { redirected: addition.redirected, appended })
+    }
+
+    /// `patch` laid out at `base` of a program that runs the executable as the linker wrote
+    /// it, for the program to apply in its memory; and the `LC_UUID` of the executable.
+    pub(crate) fn live(
+        &self,
+        patch: &[u8],
+        base: u64,
+    ) -> anyhow::Result<([u8; 16], ra_jit_live::format::Code)> {
+        let Executable::MachO(image) = &self.image else {
+            bail!("edits are applied to a running program on macOS only")
+        };
+        let uuid = macho::uuid(image).context("the executable has no UUID")?;
+        Ok((uuid, macho::live(image, &self.baked, &self.originals, patch, base)?))
+    }
+
+    /// The `LC_UUID` of the executable, when it is one that has it.
+    pub(crate) fn uuid(&self) -> Option<[u8; 16]> {
+        match &self.image {
+            Executable::MachO(image) => macho::uuid(image),
+            _ => None,
+        }
     }
 
     /// The splice of a wasm module, which is written anew from the linker's each time.

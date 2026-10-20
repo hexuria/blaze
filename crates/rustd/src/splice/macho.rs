@@ -533,6 +533,14 @@ impl Image {
         Ok(text.context("no segment has the header")?.address)
     }
 
+    /// What is loaded from `offset` of the file.
+    fn address_of(&self, offset: u64) -> anyhow::Result<u64> {
+        (self.segments.iter())
+            .find(|it| it.file_size != 0 && (it.offset..it.offset + it.file_size).contains(&offset))
+            .map(|it| it.address + (offset - it.offset))
+            .with_context(|| format!("nothing is loaded from {offset:#x} of the file"))
+    }
+
     /// Where in the file the linker put what is loaded at `address`.
     fn offset_of(&self, address: u64) -> anyhow::Result<u64> {
         (self.segments.iter())
@@ -1065,177 +1073,24 @@ impl<'a> Patch<'a> {
     fn place(&self, image: &Image) -> anyhow::Result<Addition> {
         let linkedit = image.linkedit();
         let (offset, base) = (linkedit.offset, linkedit.address);
-        let old_frames = image.frames.bytes.len().next_multiple_of(8);
-        let frames = match self.frames {
-            Some(index) => {
-                let section = self.file.section_by_index(index)?;
-                Pointer::all(section.data()?)?.iter().filter(|it| it.frame.is_some()).count()
-            }
-            None => 0,
-        };
-
-        // Where everything goes, as offsets from `base`.
-        let mut end = 0u64;
-        let mut reserve = |len: usize, align: u64| {
-            let start = end.next_multiple_of(align);
-            end = start + len as u64;
-            start
-        };
-        let mut placed = FxHashMap::default();
-        let unwind_at = reserve(unwind_table_len(&image.unwind.bytes, frames)?, 8);
-        let frames_at = reserve(old_frames, 8);
-        if let Some(index) = self.frames {
-            placed.insert(index, reserve(self.file.section_by_index(index)?.size() as usize, 8));
-        }
-        let frames_end = reserve(0, 1);
-        let (mut stubs_at, mut code_end, mut data_at) = (0, 0, 0);
-        for (segment, sections) in self.sections.iter().enumerate() {
-            for &index in sections {
-                let section = self.file.section_by_index(index)?;
-                placed.insert(index, reserve(section.size() as usize, section.align().max(1)));
-            }
-            if segment == TEXT {
-                stubs_at = reserve(self.stubs.len() * Code::STUB, 4);
-                code_end = reserve(0, 1);
-                data_at = reserve(0, PAGE);
-            }
-        }
-        // A segment of nothing is not one.
-        let slots_at = reserve(self.slots.len().max(1) * Self::SLOT, 8);
-        let linkedit_at = reserve(0, PAGE);
-        let mut appended = vec![0u8; linkedit_at as usize];
-
-        // A static written in place is where the executable has it: its section is added
-        // as a whole, with a copy of it that nothing may use.
-        let address = |target: Target, added: i64| -> anyhow::Result<u64> {
-            let (section, at) = match target {
-                Target::Ours(section, at) => (section, at),
-                Target::Theirs(address) => return Ok(address.wrapping_add_signed(added)),
-                Target::Import(_) => bail!("the address of what is in another library"),
-            };
-            let in_place = self.in_place.get(&section).map_or(&[][..], |it| it);
-            Ok(match in_place.iter().find(|it| it.holds(at)) {
-                Some(it) => it.old.address + (at - it.offset),
-                None => base + placed[&section] + at,
-            }
-            .wrapping_add_signed(added))
-        };
-        let slot_of: FxHashMap<SymbolIndex, u64> = (self.slots.iter().copied())
-            .zip((0..).map(|at| base + slots_at + at * Self::SLOT as u64))
-            .collect();
-        let stub_of: FxHashMap<SymbolIndex, u64> = (self.stubs.iter().copied())
-            .zip((0..).map(|at| base + stubs_at + at * Code::STUB as u64))
-            .collect();
-        let slot = |relocation: &Relocation| match self.targets[&relocation.symbol] {
-            Target::Import(Import { slot: Some(slot), .. }) => slot,
-            _ => slot_of[&relocation.symbol],
-        };
-
+        let Laid {
+            mut appended,
+            placed,
+            unwind_at,
+            frames_at,
+            frames_end,
+            old_frames,
+            frames,
+            code_end,
+            data_at,
+            linkedit_at,
+            stored,
+            restored,
+            statics,
+        } = self.lay_out(image, base, true)?;
         let mut overwritten = Vec::new();
-        // The addresses stored in data, which the loader moves with the program: those of
-        // the patch, and those of the statics written in place, by where.
-        let mut stored = Vec::new();
-        let mut restored = FxHashSet::default();
-        for section in self.file.sections() {
-            let Some(&start) = placed.get(&section.index()) else { continue };
-            let data = section.data()?;
-            appended[start as usize..][..data.len()].copy_from_slice(data);
-            let in_place = self.in_place.get(&section.index()).map_or(&[][..], |it| it);
-            let mut values: Vec<Vec<u8>> = in_place
-                .iter()
-                .map(|it| match data.get(it.offset as usize..(it.offset + it.size) as usize) {
-                    Some(value) => value.to_vec(),
-                    None => vec![0; it.size as usize],
-                })
-                .collect();
-            for relocation in &self.relocations[&section.index()] {
-                let target = self.targets[&relocation.symbol];
-                let at = (start + relocation.at) as usize;
-                let place = base + at as u64;
-                let field = |len: usize| {
-                    appended.get(at..at + len).context("a relocation past its section")
-                };
-                if let Some(which) = in_place.iter().position(|it| it.holds(relocation.at)) {
-                    ensure!(relocation.fixup == Fixup::Absolute, "a static that stores a distance");
-                    let within = (relocation.at - in_place[which].offset) as usize;
-                    let value = address(target, relocation.addend + u64_at(field(8)?, 0)? as i64)?;
-                    let field = values[which].get_mut(within..within + 8);
-                    field
-                        .context("an address past its static")?
-                        .copy_from_slice(&value.to_le_bytes());
-                    restored.insert(in_place[which].old.address + within as u64);
-                    continue;
-                }
-                match relocation.fixup {
-                    Fixup::Absolute => {
-                        let value =
-                            address(target, relocation.addend + u64_at(field(8)?, 0)? as i64)?;
-                        put64(&mut appended, at, value);
-                        stored.push(place);
-                    }
-                    Fixup::Distance(from, len) => {
-                        let from = address(self.targets[&from], 0)?;
-                        let written = match len {
-                            4 => i64::from(u32_at(field(4)?, 0)? as i32),
-                            _ => u64_at(field(8)?, 0)? as i64,
-                        };
-                        let to = address(target, relocation.addend + written)?;
-                        let distance = to.wrapping_sub(from).to_le_bytes();
-                        appended[at..at + len].copy_from_slice(&distance[..len]);
-                    }
-                    Fixup::SlotDistance => {
-                        let written = i64::from(u32_at(field(4)?, 0)? as i32);
-                        let to = slot(relocation).wrapping_add_signed(relocation.addend + written);
-                        let distance = i32::try_from(to.wrapping_sub(place) as i64);
-                        put32(
-                            &mut appended,
-                            at,
-                            distance.context("the program is too large")? as u32,
-                        );
-                    }
-                    fixup => {
-                        let instruction = u32_at(field(4)?, 0)?;
-                        let instruction = match fixup {
-                            Fixup::Branch => {
-                                let direct = match target {
-                                    Target::Import(Import { stub, .. }) => stub,
-                                    _ => Some(address(target, relocation.addend)?),
-                                };
-                                let to = direct
-                                    .filter(|to| Code::reaches(*to, place))
-                                    .unwrap_or_else(|| stub_of[&relocation.symbol]);
-                                Code::branch(instruction, to, place)?
-                            }
-                            Fixup::Page => {
-                                Code::page(instruction, address(target, relocation.addend)?, place)?
-                            }
-                            Fixup::Offset => {
-                                Code::offset(instruction, address(target, relocation.addend)?)?
-                            }
-                            Fixup::SlotPage => Code::page(instruction, slot(relocation), place)?,
-                            _ => Code::offset(instruction, slot(relocation))?,
-                        };
-                        put32(&mut appended, at, instruction);
-                    }
-                }
-            }
-            for (new, value) in in_place.iter().zip(values) {
-                overwritten.push((image.offset_of(new.old.address)?, value));
-            }
-        }
-        for (&index, &slot) in &slot_of {
-            put64(&mut appended, (slot - base) as usize, address(self.targets[&index], 0)?);
-            stored.push(slot);
-        }
-        for (&index, &stub) in &stub_of {
-            let code = match self.targets[&index] {
-                Target::Import(Import { stub: Some(theirs), .. }) => {
-                    Code::stub(theirs, stub, false)?
-                }
-                Target::Import(Import { slot: Some(slot), .. }) => Code::stub(slot, stub, true)?,
-                target => Code::stub(address(target, 0)?, stub, false)?,
-            };
-            appended[(stub - base) as usize..][..Code::STUB].copy_from_slice(&code);
+        for (address, value) in statics {
+            overwritten.push((image.offset_of(address)?, value));
         }
 
         // The frames: the program's, which say how far their code is from where they were,
@@ -1282,21 +1137,7 @@ impl<'a> Patch<'a> {
         // The symbols of the functions name the new code, for whoever reads a backtrace.
         let mut renamed = Vec::new();
         let mut redirected = 0;
-        for replaced in &self.replaced {
-            let Some(old) = replaced.old.filter(|it| it.kind == SymbolKind::Text) else { continue };
-            let new = base + placed[&replaced.section] + replaced.offset;
-            let shown = || String::from_utf8_lossy(replaced.name);
-            let jump = if Code::reaches(new, old.address) {
-                Code::branch(0x1400_0000, new, old.address)?.to_le_bytes().to_vec()
-            } else {
-                ensure!(
-                    old.size >= Code::STUB as u64,
-                    "{} is too short to jump so far from",
-                    shown()
-                );
-                Code::stub(new, old.address, false)?.to_vec()
-            };
-            ensure!(old.size >= jump.len() as u64, "{} is too short to jump from", shown());
+        for (old, new, jump) in self.redirects(base, &placed)? {
             overwritten.push((image.offset_of(old.address)?, jump));
             renamed.push((old.entry, new));
             redirected += 1;
@@ -1324,6 +1165,305 @@ impl<'a> Patch<'a> {
         overwritten.push((0, commands));
         appended.extend_from_slice(&linkedit);
         Ok(Addition { offset, appended, overwritten, redirected })
+    }
+
+    /// Lays the patch out at `base` of a running program, whose memory it is applied to:
+    /// nothing of the executable's tables is written again, and the unwinder is told of the
+    /// patch's frames where they are.
+    fn place_live(
+        &self,
+        image: &Image,
+        originals: &FxHashMap<u64, Vec<u8>>,
+        base: u64,
+    ) -> anyhow::Result<ra_jit_live::format::Code> {
+        ensure!(base.is_multiple_of(PAGE), "a patch laid out off a page");
+        let laid = self.lay_out(image, base, false)?;
+        let frames = match self.frames {
+            Some(index) => (laid.placed[&index], self.file.section_by_index(index)?.size()),
+            None => (0, 0),
+        };
+        let mut writes = Vec::new();
+        for (old, _, jump) in self.redirects(base, &laid.placed)? {
+            writes.push(ra_jit_live::format::Write {
+                address: old.address,
+                bytes: jump,
+                pointers: Vec::new(),
+            });
+        }
+        let redirected = writes.len() as u64;
+        for (address, bytes) in laid.statics {
+            let pointers = (laid.restored.iter())
+                .filter(|it| (address..address + bytes.len() as u64).contains(it))
+                .map(|it| it - address)
+                .collect();
+            writes.push(ra_jit_live::format::Write { address, bytes, pointers });
+        }
+        let statics = writes.len() as u64 - redirected;
+        // What a splice wrote that this patch does not is put back as the linker wrote it.
+        let written: FxHashSet<u64> = writes.iter().map(|it| it.address).collect();
+        for (&address, bytes) in originals {
+            if written.contains(&address) {
+                continue;
+            }
+            let after = image.rebases.partition_point(|it| *it < address);
+            let pointers = (image.rebases[after..].iter())
+                .take_while(|it| **it < address + bytes.len() as u64)
+                .map(|it| it - address)
+                .collect();
+            writes.push(ra_jit_live::format::Write { address, bytes: bytes.clone(), pointers });
+        }
+        let mut appended = laid.appended;
+        let data = appended.split_off(laid.data_at as usize);
+        Ok(ra_jit_live::format::Code {
+            base,
+            text: appended,
+            data,
+            frames,
+            pointers: laid.stored.iter().map(|it| it - base).collect(),
+            writes,
+            redirected,
+            statics,
+        })
+    }
+
+    /// The jump over the entry of each function the patch replaces, by the function: to
+    /// where its new code is when the patch is laid out at `base`.
+    fn redirects(
+        &self,
+        base: u64,
+        placed: &FxHashMap<SectionIndex, u64>,
+    ) -> anyhow::Result<Vec<(Defined, u64, Vec<u8>)>> {
+        let mut found = Vec::new();
+        for replaced in &self.replaced {
+            let Some(old) = replaced.old.filter(|it| it.kind == SymbolKind::Text) else { continue };
+            let new = base + placed[&replaced.section] + replaced.offset;
+            let shown = || String::from_utf8_lossy(replaced.name);
+            let jump = if Code::reaches(new, old.address) {
+                Code::branch(0x1400_0000, new, old.address)?.to_le_bytes().to_vec()
+            } else {
+                ensure!(
+                    old.size >= Code::STUB as u64,
+                    "{} is too short to jump so far from",
+                    shown()
+                );
+                Code::stub(new, old.address, false)?.to_vec()
+            };
+            ensure!(old.size >= jump.len() as u64, "{} is too short to jump from", shown());
+            found.push((old, new, jump));
+        }
+        Ok(found)
+    }
+
+    /// Lays the patch out at `base`, with room in front for the executable's unwind tables
+    /// when `program` is, and gives everything in it its address.
+    fn lay_out(&self, image: &Image, base: u64, program: bool) -> anyhow::Result<Laid> {
+        let old_frames = if program { image.frames.bytes.len().next_multiple_of(8) } else { 0 };
+        let frames = match self.frames {
+            Some(index) => {
+                let section = self.file.section_by_index(index)?;
+                Pointer::all(section.data()?)?.iter().filter(|it| it.frame.is_some()).count()
+            }
+            None => 0,
+        };
+
+        // Where everything goes, as offsets from `base`.
+        let mut end = 0u64;
+        let mut reserve = |len: usize, align: u64| {
+            let start = end.next_multiple_of(align);
+            end = start + len as u64;
+            start
+        };
+        let mut placed = FxHashMap::default();
+        let unwind_len = if program { unwind_table_len(&image.unwind.bytes, frames)? } else { 0 };
+        let unwind_at = reserve(unwind_len, 8);
+        let frames_at = reserve(old_frames, 8);
+        if let Some(index) = self.frames {
+            placed.insert(index, reserve(self.file.section_by_index(index)?.size() as usize, 8));
+        }
+        let frames_end = reserve(0, 1);
+        let (mut stubs_at, mut code_end, mut data_at) = (0, 0, 0);
+        for (segment, sections) in self.sections.iter().enumerate() {
+            for &index in sections {
+                let section = self.file.section_by_index(index)?;
+                placed.insert(index, reserve(section.size() as usize, section.align().max(1)));
+            }
+            if segment == TEXT {
+                stubs_at = reserve(self.stubs.len() * Code::STUB, 4);
+                code_end = reserve(0, 1);
+                data_at = reserve(0, PAGE);
+            }
+        }
+        // A segment of nothing is not one.
+        let slots_at = reserve(self.slots.len().max(1) * Self::SLOT, 8);
+        let linkedit_at = reserve(0, PAGE);
+        let mut appended = vec![0u8; linkedit_at as usize];
+
+        // A static written in place is where the executable has it: its section is added
+        // as a whole, with a copy of it that nothing may use.
+        let address = |target: Target, added: i64| -> anyhow::Result<u64> {
+            let (section, at) = match target {
+                Target::Ours(section, at) => (section, at),
+                Target::Theirs(address) => return Ok(address.wrapping_add_signed(added)),
+                Target::Import(_) => bail!("the address of what is in another library"),
+            };
+            let in_place = self.in_place.get(&section).map_or(&[][..], |it| it);
+            Ok(match in_place.iter().find(|it| it.holds(at)) {
+                Some(it) => it.old.address + (at - it.offset),
+                None => base + placed[&section] + at,
+            }
+            .wrapping_add_signed(added))
+        };
+        // What calls a function the executable has, or takes its address, goes through the
+        // entry the executable has it at, which jumps to the newest code: a program may run
+        // code of this patch while a later one replaces the function, and nothing jumps
+        // from where this patch has it. Where the unwinder finds code is where it is.
+        let entries: FxHashMap<(SectionIndex, u64), u64> = (self.replaced.iter())
+            .filter_map(|it| {
+                let old = it.old.filter(|old| old.kind == SymbolKind::Text)?;
+                Some(((it.section, it.offset), old.address))
+            })
+            .collect();
+        let entry = |target: Target, added: i64| -> anyhow::Result<u64> {
+            match target {
+                Target::Ours(section, at) if added == 0 => match entries.get(&(section, at)) {
+                    Some(&old) => Ok(old),
+                    None => address(target, added),
+                },
+                _ => address(target, added),
+            }
+        };
+        let slot_of: FxHashMap<SymbolIndex, u64> = (self.slots.iter().copied())
+            .zip((0..).map(|at| base + slots_at + at * Self::SLOT as u64))
+            .collect();
+        let stub_of: FxHashMap<SymbolIndex, u64> = (self.stubs.iter().copied())
+            .zip((0..).map(|at| base + stubs_at + at * Code::STUB as u64))
+            .collect();
+        let slot = |relocation: &Relocation| match self.targets[&relocation.symbol] {
+            Target::Import(Import { slot: Some(slot), .. }) => slot,
+            _ => slot_of[&relocation.symbol],
+        };
+
+        let mut statics = Vec::new();
+        // The addresses stored in data, which the loader moves with the program: those of
+        // the patch, and those of the statics written in place, by where.
+        let mut stored = Vec::new();
+        let mut restored = FxHashSet::default();
+        for section in self.file.sections() {
+            let Some(&start) = placed.get(&section.index()) else { continue };
+            let data = section.data()?;
+            appended[start as usize..][..data.len()].copy_from_slice(data);
+            let in_place = self.in_place.get(&section.index()).map_or(&[][..], |it| it);
+            let mut values: Vec<Vec<u8>> = in_place
+                .iter()
+                .map(|it| match data.get(it.offset as usize..(it.offset + it.size) as usize) {
+                    Some(value) => value.to_vec(),
+                    None => vec![0; it.size as usize],
+                })
+                .collect();
+            for relocation in &self.relocations[&section.index()] {
+                let target = self.targets[&relocation.symbol];
+                let at = (start + relocation.at) as usize;
+                let place = base + at as u64;
+                let field = |len: usize| {
+                    appended.get(at..at + len).context("a relocation past its section")
+                };
+                if let Some(which) = in_place.iter().position(|it| it.holds(relocation.at)) {
+                    ensure!(relocation.fixup == Fixup::Absolute, "a static that stores a distance");
+                    let within = (relocation.at - in_place[which].offset) as usize;
+                    let value = entry(target, relocation.addend + u64_at(field(8)?, 0)? as i64)?;
+                    let field = values[which].get_mut(within..within + 8);
+                    field
+                        .context("an address past its static")?
+                        .copy_from_slice(&value.to_le_bytes());
+                    restored.insert(in_place[which].old.address + within as u64);
+                    continue;
+                }
+                match relocation.fixup {
+                    Fixup::Absolute => {
+                        let value =
+                            entry(target, relocation.addend + u64_at(field(8)?, 0)? as i64)?;
+                        put64(&mut appended, at, value);
+                        stored.push(place);
+                    }
+                    Fixup::Distance(from, len) => {
+                        let from = address(self.targets[&from], 0)?;
+                        let written = match len {
+                            4 => i64::from(u32_at(field(4)?, 0)? as i32),
+                            _ => u64_at(field(8)?, 0)? as i64,
+                        };
+                        let to = address(target, relocation.addend + written)?;
+                        let distance = to.wrapping_sub(from).to_le_bytes();
+                        appended[at..at + len].copy_from_slice(&distance[..len]);
+                    }
+                    Fixup::SlotDistance => {
+                        let written = i64::from(u32_at(field(4)?, 0)? as i32);
+                        let to = slot(relocation).wrapping_add_signed(relocation.addend + written);
+                        let distance = i32::try_from(to.wrapping_sub(place) as i64);
+                        put32(
+                            &mut appended,
+                            at,
+                            distance.context("the program is too large")? as u32,
+                        );
+                    }
+                    fixup => {
+                        let instruction = u32_at(field(4)?, 0)?;
+                        let instruction = match fixup {
+                            Fixup::Branch => {
+                                let direct = match target {
+                                    Target::Import(Import { stub, .. }) => stub,
+                                    _ => Some(entry(target, relocation.addend)?),
+                                };
+                                let to = direct
+                                    .filter(|to| Code::reaches(*to, place))
+                                    .unwrap_or_else(|| stub_of[&relocation.symbol]);
+                                Code::branch(instruction, to, place)?
+                            }
+                            Fixup::Page => {
+                                Code::page(instruction, entry(target, relocation.addend)?, place)?
+                            }
+                            Fixup::Offset => {
+                                Code::offset(instruction, entry(target, relocation.addend)?)?
+                            }
+                            Fixup::SlotPage => Code::page(instruction, slot(relocation), place)?,
+                            _ => Code::offset(instruction, slot(relocation))?,
+                        };
+                        put32(&mut appended, at, instruction);
+                    }
+                }
+            }
+            for (new, value) in in_place.iter().zip(values) {
+                statics.push((new.old.address, value));
+            }
+        }
+        for (&index, &slot) in &slot_of {
+            put64(&mut appended, (slot - base) as usize, entry(self.targets[&index], 0)?);
+            stored.push(slot);
+        }
+        for (&index, &stub) in &stub_of {
+            let code = match self.targets[&index] {
+                Target::Import(Import { stub: Some(theirs), .. }) => {
+                    Code::stub(theirs, stub, false)?
+                }
+                Target::Import(Import { slot: Some(slot), .. }) => Code::stub(slot, stub, true)?,
+                target => Code::stub(entry(target, 0)?, stub, false)?,
+            };
+            appended[(stub - base) as usize..][..Code::STUB].copy_from_slice(&code);
+        }
+        Ok(Laid {
+            appended,
+            placed,
+            unwind_at,
+            frames_at,
+            frames_end,
+            old_frames,
+            frames,
+            code_end,
+            data_at,
+            linkedit_at,
+            stored,
+            restored,
+            statics,
+        })
     }
 }
 
@@ -1444,6 +1584,60 @@ impl Layout {
     }
 }
 
+/// The patch laid out, as offsets from where it starts.
+struct Laid {
+    appended: Vec<u8>,
+    placed: FxHashMap<SectionIndex, u64>,
+    unwind_at: u64,
+    frames_at: u64,
+    frames_end: u64,
+    /// How much room the executable's frames are given in front of the patch's.
+    old_frames: usize,
+    /// How many frames the patch has.
+    frames: usize,
+    code_end: u64,
+    data_at: u64,
+    linkedit_at: u64,
+    /// The addresses stored in what is appended, which move with the program.
+    stored: Vec<u64>,
+    /// Those stored in the statics written in place.
+    restored: FxHashSet<u64>,
+    /// The statics written in place, by the address of the one each replaces.
+    statics: Vec<(u64, Vec<u8>)>,
+}
+
+/// The patch laid out at `base` of a program that runs the executable `image` was read
+/// from, for the program to apply in its memory.
+pub(super) fn live(
+    image: &Image,
+    baked: &[Box<[u8]>],
+    originals: &FxHashMap<u64, Vec<u8>>,
+    patch: &[u8],
+    base: u64,
+) -> anyhow::Result<ra_jit_live::format::Code> {
+    let patch = Patch::read(patch, image)?;
+    let defined: FxHashSet<&[u8]> = patch.replaced.iter().map(|it| it.name).collect();
+    ensure!(
+        baked.iter().all(|it| defined.contains(&**it)),
+        "a function the executable was linked with a patch of is as it first was"
+    );
+    patch.place_live(image, originals, base)
+}
+
+/// The `LC_UUID` of the executable, which names it to a running program.
+pub(super) fn uuid(image: &Image) -> Option<[u8; 16]> {
+    let count = u32_at(&image.commands, 16).ok()?;
+    let mut at = HEADER;
+    for _ in 0..count {
+        let size = u32_at(&image.commands, at + 4).ok()? as usize;
+        if u32_at(&image.commands, at).ok()? == macho::LC_UUID {
+            return image.commands.get(at + 8..at + 24)?.try_into().ok();
+        }
+        at += size;
+    }
+    None
+}
+
 /// What a splice writes.
 struct Addition {
     /// Where in the file `appended` goes: over `__LINKEDIT`.
@@ -1462,6 +1656,7 @@ pub(super) fn splice(
     path: &Path,
     baked: &[Box<[u8]>],
     undo: &mut Vec<(u64, Vec<u8>)>,
+    originals: &mut FxHashMap<u64, Vec<u8>>,
     stamp: &mut Stamp,
     patch: &[u8],
 ) -> anyhow::Result<Spliced> {
@@ -1487,6 +1682,14 @@ pub(super) fn splice(
         for (offset, bytes) in &addition.overwritten {
             let mut old = vec![0; bytes.len()];
             super::read_exact_at(&file, &mut old, *offset)?;
+            // The last splice is undone: this is what the linker wrote.
+            if *offset != 0 {
+                let address = image.address_of(*offset)?;
+                let known = originals.entry(address).or_default();
+                if known.len() < old.len() {
+                    known.clone_from(&old);
+                }
+            }
             undo.push((*offset, old));
             super::write_all_at(&file, bytes, *offset)?;
         }
