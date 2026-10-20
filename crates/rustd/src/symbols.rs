@@ -364,21 +364,33 @@ impl SymbolTable {
     /// A source that was written after rustc built the crate it is of: what rustc built is
     /// then not what it would build now.
     pub(crate) fn written_since_built(&self) -> Option<&Path> {
-        self.built_from.iter().find_map(|(built, sources)| {
-            let built = written(built)?;
-            sources.iter().find(|it| it.written_since(built)).map(|it| &*it.path)
-        })
+        self.all_written_since_built().next()
     }
 
     /// Every source that was written after rustc built the crate it is of.
     pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = &Path> {
-        self.built_from.iter().flat_map(|(built, sources)| {
-            let built = written(built);
+        let finished = self.finished();
+        self.built_from.iter().flat_map(move |(_, sources)| {
+            let built = sources.first().and_then(|root| finished.get(&root.path).copied());
             sources
                 .iter()
                 .filter(move |it| built.is_some_and(|built| it.written_since(built)))
                 .map(|it| &*it.path)
         })
+    }
+
+    /// When rustc finished each crate, by the crate's root file: the newest of its files. An
+    /// incremental build keeps the objects of the codegen units it did not compile again as
+    /// they were, with their old times, so one object of a crate built after an edit can be
+    /// older than the edit.
+    fn finished(&self) -> FxHashMap<PathBuf, SystemTime> {
+        let mut finished: FxHashMap<PathBuf, SystemTime> = FxHashMap::default();
+        for (built, sources) in &self.built_from {
+            let (Some(root), Some(at)) = (sources.first(), written(built)) else { continue };
+            let newest = finished.entry(root.path.clone()).or_insert(at);
+            *newest = (*newest).max(at);
+        }
+        finished
     }
 
     /// Whether rustc has built one of the files again since they were read.
