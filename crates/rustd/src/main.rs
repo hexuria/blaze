@@ -2728,8 +2728,7 @@ fn build(
         emit: start.elapsed(),
         steps: [setup, revalidate - setup, codegen - revalidate],
         looked,
-        unset: unset_in(db, &local)
-            .map(|it| format!("`env!(\"{it}\")` names a variable that is not set")),
+        unset: unset_in(db, &local),
     };
     if let Some(path) = &args.report {
         let compiled: Vec<String> = unit.compiled.iter().map(|&(func, _)| name(func)).collect();
@@ -3055,7 +3054,13 @@ fn unset_in(db: &RootDatabase, crates: &[Crate]) -> Option<String> {
                 && !krate.env(db).contains_key(key)
                 && ide_db::base_db::process_env_var(db, key).is_none()
         })
-        .map(|(_, key)| key)
+        .map(|(krate, key)| match &krate.extra_data(db).display_name {
+            Some(name) => format!(
+                "`env!(\"{key}\")` in {} names a variable that is not set",
+                name.canonical_name()
+            ),
+            None => format!("`env!(\"{key}\")` names a variable that is not set"),
+        })
         .collect();
     unset.sort_unstable();
     unset.into_iter().next()
