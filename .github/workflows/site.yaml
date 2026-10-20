@@ -1,0 +1,75 @@
+name: site
+
+# Builds `site/`, with the playground's compiler in it, and publishes it to GitHub Pages from
+# `main`. A pull request that touches what the playground is built from builds it too, and is
+# not deployed. The repository's Pages source has to be "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "crates/rustd-wasm/**"
+      # What the compiler in the playground is built from.
+      - "crates/hir-ty-codegen/**"
+      - "vendor/rust-analyzer"
+      - ".github/workflows/site.yaml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "crates/rustd-wasm/**"
+      - "crates/hir-ty-codegen/**"
+      - "vendor/rust-analyzer"
+      - ".github/workflows/site.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: warp-ubuntu-latest-x64-8x
+    steps:
+      - uses: actions/checkout@v6
+      - run: sh -n site/install.sh
+      # The playground's compiler is built here and not committed. A build of it that fails,
+      # or that `check.mjs` does not pass, fails the job: the site is not deployed without it.
+      - name: Playground toolchain
+        run: |
+          git submodule update --init --depth 1 vendor/rust-analyzer
+          rustup toolchain install 1.99.0 --profile minimal -c rust-src -t wasm32-unknown-unknown
+          rustup default 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: "warpbuild"
+          workspaces: "crates/rustd-wasm -> ../../target"
+      - name: Playground
+        run: crates/rustd-wasm/web/build-site.sh
+      - name: Playground is in the site
+        run: |
+          for file in manifest.json rustd_wasm.wasm.gz core.bundle.gz; do
+            test -s "site/playground/rustd/pkg/$file"
+          done
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

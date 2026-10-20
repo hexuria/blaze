@@ -1,0 +1,53 @@
+# A long differential fuzz run every night: generated programs built by rustc and by rustd
+# under both producers, outputs compared. The seed is the run number, so every night covers
+# new programs and a failing night can be repeated with `fuzz.py run --seed N`.
+name: fuzz
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: seed (defaults to the run number)
+        required: false
+      rounds:
+        description: programs to generate
+        default: "200"
+
+env:
+  CARGO_INCREMENTAL: 0
+  LLVM_SYS_201_PREFIX: /usr/lib/llvm-20
+
+jobs:
+  fuzz:
+    runs-on: warp-ubuntu-latest-x64-8x
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
+      - name: LLVM 20
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
+          sudo apt-get install -y llvm-20-dev libpolly-20-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: "warpbuild"
+      - run: cargo build -p rustd --release --features llvm --locked
+      - name: Fuzz
+        working-directory: harness
+        run: |
+          export RUSTD_BIN="$GITHUB_WORKSPACE/target/release/rustd"
+          python3 fuzz/fuzz.py run --seed "${{ inputs.seed || github.run_number }}" \
+            --rounds "${{ inputs.rounds || '200' }}" --backends cranelift,llvm \
+            --out "$RUNNER_TEMP/fuzz-out" || status=$?
+          python3 fuzz/fuzz.py report "$RUNNER_TEMP/fuzz-out" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${status:-0}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/fuzz-out
+            harness/fuzz/found

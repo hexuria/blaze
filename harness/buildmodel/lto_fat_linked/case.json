@@ -1,0 +1,15 @@
+{
+  "row": "`lto = true`, and what rustd links against built with it",
+  "package": "app",
+  "crates": [
+    "app",
+    "dep"
+  ],
+  "cargo": [
+    "--release"
+  ],
+  "rustd": [
+    "--release"
+  ],
+  "expect": "refused"
+}

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rustd playground: the compiler in this page</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Edit a Rust program and rustd compiles it to WebAssembly inside the page, a function at a time, while it runs.">
+<style>
+:root { color-scheme: light dark; --bg: #fbfaf7; --fg: #1c1b19; --dim: #6b6862; --line: #e3dfd6; --code: #f1eee7; --accent: #b4441c; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151413; --fg: #ece8e0; --dim: #9a958b; --line: #2e2c29; --code: #1f1e1c; --accent: #f08a5d; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 56px 22px 80px; }
+nav { display: flex; gap: 20px; align-items: baseline; margin-bottom: 40px; font-size: 15px; flex-wrap: wrap; }
+nav strong { font: 600 18px ui-monospace, SFMono-Regular, Menlo, monospace; margin-right: auto; }
+nav strong a { color: inherit; }
+nav [aria-current] { color: var(--fg); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 32px; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 12px; }
+h2 { font-size: 22px; margin: 48px 0 12px; padding-top: 24px; border-top: 1px solid var(--line); }
+.lede { font-size: 19px; color: var(--dim); margin: 0 0 24px; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+ul { padding-left: 22px; }
+li { margin: 6px 0; }
+.note { border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; color: var(--dim); }
+footer { margin-top: 64px; color: var(--dim); font-size: 14px; }
+</style>
+<link rel="stylesheet" href="playground.css">
+</head>
+<body>
+<main>
+<nav>
+  <strong><a href="../">rustd</a></strong>
+  <a href="../#install">Install</a>
+  <a href="../#use">Use</a>
+  <a href="../#numbers">Numbers</a>
+  <a href="./" aria-current="page">Playground</a>
+  <a href="https://github.com/DioxusLabs/rustd">GitHub</a>
+</nav>
+
+<h1>rustd, compiling in this page.</h1>
+<p class="lede">The program on the left is compiled to WebAssembly by rustd running in your
+browser. Change it while it runs: only the functions the edit touched are compiled again and
+swapped in, and the program carries on from where it was.</p>
+
+<section id="playground">
+  <div id="bar">
+    <label for="demo">Program</label>
+    <select id="demo"></select>
+    <button id="reset" type="button">Reset</button>
+    <span id="state" role="status">not loaded yet</span>
+  </div>
+  <div id="panes">
+    <div id="editor">
+      <pre aria-hidden="true"><code id="paint"></code></pre>
+      <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Rust source" disabled></textarea>
+    </div>
+    <div id="stage">
+      <canvas id="canvas" aria-label="What the program draws"></canvas>
+      <div id="cover">
+        <span id="cover-text">Loading the playground…</span>
+        <progress id="progress" max="1" value="0" hidden></progress>
+      </div>
+    </div>
+  </div>
+  <ol id="log" aria-label="Builds"></ol>
+</section>
+
+<h2>What runs here</h2>
+<p>The compiler is rustd's own: rust-analyzer's parser, name resolution and type inference,
+then rustd's code generator, built as one WebAssembly module of <span id="size-compiler">about
+26 MB</span> (<span id="size-transfer">about 7 MB</span> to download, with the source of
+<code>core</code>). It runs in a worker in this page. No server compiles anything, and neither
+rustc nor LLVM is involved at any point.</p>
+<p>The first build of a program compiles it together with every function of <code>core</code>
+it reaches, from <code>core</code>'s source, which takes a few seconds. After an edit rustd
+compiles the functions whose code changed, writes a small module with them, and the page
+puts them into the running program's function table. Statics are left alone, which is why the
+drops in the air stay where they are. An edit that changes the type of a static starts that static
+again.</p>
+
+<h2>What it does not do</h2>
+<ul>
+<li><b>One file, <code>core</code> only.</b> The program is a single <code>#![no_std]</code>
+file. There is no <code>std</code> and no <code>alloc</code>, so no <code>Vec</code>,
+<code>String</code> or <code>println!</code>, and no crates from crates.io.</li>
+<li><b>No macros of your own from other crates.</b> <code>macro_rules!</code> and the built-in
+macros work. Procedural macros do not, as there is no rustc here to build them.</li>
+<li><b>Few error messages.</b> rustd has no diagnostics of its own. A function that does not
+parse or type-check is reported by name with a terse reason, and the program keeps running
+with the last version of it that compiled. Nothing checks borrows or moves, so code rustc
+would reject can compile here.</li>
+<li><b>Not the native code generator.</b> Natively rustd emits machine code with Cranelift or
+LLVM. For WebAssembly it lowers the same Cranelift IR with a lowering of its own, which is
+newer and less tested. Nothing is optimised across functions.</li>
+<li><b>It can be wrong.</b> The compiler is a prototype. If a program misbehaves here, check
+it with rustc before believing it.</li>
+<li><b>Only what the page provides.</b> The program draws through four functions the page
+gives it (<code>fill</code>, <code>rect</code>, <code>circle</code>, <code>text</code>) and the
+page calls its <code>frame</code> and <code>click</code>. There is no DOM access and no
+<code>wasm-bindgen</code>.</li>
+</ul>
+<p class="note">The daemon you install does more than this page: it works on whole cargo
+workspaces with <code>std</code> and dependencies, by linking into what rustc built. A browser
+version of that exists as an experiment in the repository (a Dioxus app edited live), and is
+not on this page because it needs about 1 GB of memory and a module built by rustc. See
+<a href="https://github.com/DioxusLabs/rustd/blob/main/docs/playground.md">the playground
+notes</a>.</p>
+
+<footer>MIT or Apache-2.0. Built on <a href="https://github.com/rust-lang/rust-analyzer">rust-analyzer</a>
+and <a href="https://cranelift.dev">Cranelift</a>.
+<a href="https://github.com/DioxusLabs/rustd/blob/main/docs/architecture.md">How it works</a>.</footer>
+</main>
+<script type="module" src="page.js"></script>
+</body>
+</html>

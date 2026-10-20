@@ -1,0 +1,9 @@
+[package]
+name = "wasmrun"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+wasmtime = { version = "25", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+
+[workspace]

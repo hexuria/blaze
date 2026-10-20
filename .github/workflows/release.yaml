@@ -1,0 +1,99 @@
+name: release
+
+# Builds rustd for the four platforms CI tests and attaches the archives to a GitHub release.
+# A tag `v*` makes a release of that name. A push to main replaces the prerelease `nightly`,
+# and a manual run makes or replaces the prerelease named by its input.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["main"]
+    paths-ignore: ["site/**", "**.md", "docs/**", "harness/**"]
+  workflow_dispatch:
+    inputs:
+      name:
+        description: Release to make or replace
+        default: nightly
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || inputs.name || 'nightly' }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          # The oldest hosted Ubuntu, so that the binaries ask for an old glibc.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      # Without the `llvm` feature: that one links libLLVM dynamically, which a machine that
+      # downloads the binary does not have.
+      - run: cargo build -p rustd --release --locked
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+      - name: Archive
+        run: |
+          name=rustd-${{ matrix.target }}
+          mkdir "$name"
+          cp LICENSE-APACHE LICENSE-MIT README.md "$name"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/{rustd,cargo-rustd,rustd-rustc}.exe "$name"
+            7z a "$name.zip" "$name"
+          else
+            cp target/release/{rustd,cargo-rustd,rustd-rustc} "$name"
+            tar czf "$name.tar.gz" "$name"
+          fi
+          "$name/rustd" --help > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustd-${{ matrix.target }}
+          path: |
+            rustd-${{ matrix.target }}.tar.gz
+            rustd-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        working-directory: out
+        run: sha256sum rustd-* > SHA256SUMS && cat SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Built from ${GITHUB_SHA}. Cranelift backend only; the LLVM backend is built from source. See the README for what rustd does and does not do yet."
+          if [ "${{ github.ref_type }}" = tag ]; then
+            gh release create "$RELEASE" --title "$RELEASE" --notes "$notes" --verify-tag out/*
+          else
+            # A prerelease moves with the branch it was built from.
+            gh release delete "$RELEASE" --yes --cleanup-tag || true
+            gh release create "$RELEASE" --title "$RELEASE" --notes "$notes" --prerelease --target "$GITHUB_SHA" out/*
+          fi

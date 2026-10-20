@@ -1,0 +1,86 @@
+[package]
+name = "rustd"
+version = "0.0.0"
+description = "Spike: persistent compiler on top of rust-analyzer's database"
+publish = false
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+memchr = "2"
+anyhow.workspace = true
+serde.workspace = true
+serde_derive.workspace = true
+serde_json.workspace = true
+cfg.workspace = true
+cargo-platform = "0.3.3"
+toolchain.workspace = true
+intern.workspace = true
+memmap2 = "0.9"
+wasmparser = { version = "0.236", default-features = false, features = ["std"] }
+wasm-encoder = { version = "0.244", default-features = false, features = ["std"] }
+mimalloc = { version = "0.1.46", default-features = false }
+object = { version = "0.37", default-features = false, features = ["read", "std", "archive", "elf", "macho", "coff", "pe", "wasm"] }
+rustc-demangle = "0.1.28"
+rustc-hash.workspace = true
+same-file = "1"
+dunce = "1"
+pdb = "0.8"
+sha2 = "0.10"
+cargo_metadata.workspace = true
+shlex = "2"
+toml.workspace = true
+thorin-dwp = "0.10"
+typed-arena = "2.0.2"
+
+hir.workspace = true
+hir-def.workspace = true
+hir-ty.workspace = true
+ide-db.workspace = true
+ide-diagnostics.workspace = true
+pulldown-cmark.workspace = true
+load-cargo.workspace = true
+project-model.workspace = true
+vfs.workspace = true
+triomphe.workspace = true
+paths.workspace = true
+syntax.workspace = true
+# Without the features that bring a second HTTP and TLS stack (`rustls`), a C library built
+# with cmake (`default-https-client`, which is aws-lc) and SigV4A. The client is hyper 1 over
+# rustls with ring, which is in the tree already.
+aws-config = { version = "1.8", default-features = false, features = ["behavior-version-latest", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-s3 = { version = "1.100", default-features = false, features = ["behavior-version-latest", "rt-tokio", "http-1x"] }
+# The TLS the client above is built on, named to tell a certificate that is refused from a
+# network that is down.
+rustls = { version = "0.23", default-features = false }
+aws-smithy-http-client = { version = "1.1", features = ["rustls-ring"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "fs", "io-util", "signal", "sync", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ed25519-dalek = "2.2"
+getrandom = "0.3"
+url.workspace = true
+tar = "0.4.44"
+zstd = "0.13.3"
+tikv-jemallocator = { version = "0.5.4", optional = true, features = ["profiling"] }
+tikv-jemalloc-ctl = { version = "0.5.4", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+find-msvc-tools = "0.1"
+uds_windows = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+[features]
+# Allocate with jemalloc, which can profile the heap: see `memory.rs`.
+heap-profile = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+
+# Adds LLVM as a code producer, chosen with `RUSTD_BACKEND=llvm`.
+llvm = ["hir-ty/llvm"]
+
+[lints]
+workspace = true

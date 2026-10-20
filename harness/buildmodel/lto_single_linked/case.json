@@ -1,0 +1,15 @@
+{
+  "row": "`lto = true` in a program of one crate, rustd given the link line built with it",
+  "package": "app",
+  "crates": [
+    "app"
+  ],
+  "cargo": [
+    "--release"
+  ],
+  "rustd": [
+    "--release"
+  ],
+  "expect": "refused",
+  "handed": true
+}

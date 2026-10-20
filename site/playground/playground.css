@@ -1,0 +1,48 @@
+/* The editor and what the program draws, side by side and wider than the text. Used by the
+   playground page and by the front page. */
+#playground { --good: #2f7d4f; --t-comment: #8a857b; --t-keyword: #9a2f8c; --t-string: #2f7d4f; --t-number: #b4441c; --t-type: #1c6aa3; --t-function: #7a5a00; --t-macro: #1c6aa3;
+  width: min(1240px, 100vw - 28px); margin: 0 0 0 50%; transform: translateX(-50%); }
+@media (prefers-color-scheme: dark) {
+  #playground { --good: #7cc79a; --t-comment: #8d887e; --t-keyword: #d79bf0; --t-string: #8fd0a6; --t-number: #f08a5d; --t-type: #7fbfee; --t-function: #e6c97a; --t-macro: #7fbfee; }
+}
+#playground select, #playground button, #playground textarea, #playground pre, #playground code, #log { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+#bar { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+#bar label { color: var(--dim); font-size: 15px; }
+#playground select, #playground button { color: var(--fg); background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+#playground button { cursor: pointer; }
+#state { margin-left: auto; color: var(--dim); font-size: 14px; font-variant-numeric: tabular-nums; }
+#state[data-kind="running"] { color: var(--good); }
+#state[data-kind="error"] { color: var(--accent); }
+#panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; height: min(560px, 70vh); }
+#panes > * { position: relative; min-height: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--code); }
+/* The text is typed into a textarea whose letters are not drawn; the same text, coloured, is
+   drawn under it and moved as the textarea scrolls. Both need the same metrics. */
+#editor pre, #editor textarea { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0; padding: 12px 14px; line-height: 1.5; tab-size: 4; white-space: pre; letter-spacing: 0; background: none; }
+#editor pre { overflow: hidden; color: var(--fg); pointer-events: none; }
+#editor code { display: block; width: max-content; padding: 0; border-radius: 0; background: none; font-size: inherit; }
+#editor textarea { overflow: auto; resize: none; outline: 0; color: transparent; caret-color: var(--fg); }
+#editor textarea::selection { color: transparent; background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.t-comment { color: var(--t-comment); font-style: italic; }
+.t-keyword { color: var(--t-keyword); }
+.t-string { color: var(--t-string); }
+.t-number, .t-lifetime { color: var(--t-number); }
+.t-type { color: var(--t-type); }
+.t-function { color: var(--t-function); }
+.t-macro { color: var(--t-macro); }
+.t-attribute { color: var(--t-comment); }
+#stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#cover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--dim); font-size: 15px; background: var(--code); }
+#cover[hidden] { display: none; }
+#playground progress { width: min(320px, 80%); height: 6px; accent-color: var(--accent); }
+#log { list-style: none; margin: 10px 0 0; padding: 6px 0; height: 132px; overflow-y: scroll; border: 1px solid var(--line); border-radius: 8px; background: var(--code); line-height: 1.6; }
+#log li { margin: 0; padding: 1px 12px; border-left: 3px solid transparent; white-space: pre-wrap; overflow-wrap: anywhere; }
+#log time { color: var(--dim); margin-right: 10px; }
+#log span { color: var(--dim); }
+#log .good { border-left-color: var(--good); }
+#log .good b { color: var(--good); font-weight: 600; }
+#log .bad { border-left-color: var(--accent); }
+#log .bad b { color: var(--accent); font-weight: 600; }
+#log p { margin: 0 0 0 76px; color: var(--fg); }
+@media (max-width: 820px) {
+  #panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr 1fr; height: 760px; }
+}

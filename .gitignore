@@ -1,2 +1,5 @@
-target
+target*/
 __pycache__/
+# Built: `crates/rustd-wasm/web/build.sh` and `build-site.sh`.
+/crates/rustd-wasm/web/pkg/
+/site/playground/rustd/
