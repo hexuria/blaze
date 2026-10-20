@@ -155,13 +155,22 @@ impl Args {
             })
     }
 
-    /// The directory of the project, which cargo runs rustc in.
+    /// What the paths in cargo's dep-info files are relative to: the root of the workspace
+    /// the project is in, where cargo runs rustc. A package below it, as `cargo build -p`
+    /// of one member asks for, is not.
     fn root(&self) -> anyhow::Result<PathBuf> {
         let mut root = dunce::canonicalize(&self.project)?;
         if root.is_file() {
             root.pop();
         }
-        Ok(root)
+        let declares_workspace = |dir: &Path| {
+            let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+            manifest
+                .lines()
+                .map(str::trim)
+                .any(|it| it == "[workspace]" || it.starts_with("[workspace."))
+        };
+        Ok(root.ancestors().find(|it| declares_workspace(it)).unwrap_or(&root).to_owned())
     }
 
     fn parse(mut args: impl Iterator<Item = String>) -> anyhow::Result<Args> {
