@@ -4161,6 +4161,13 @@ fn cargo_config(args: &Args) -> CargoConfig {
             true => TargetDirectoryConfig::UseSubdirectory,
             false => TargetDirectoryConfig::None,
         },
+        // The build scripts are run with cargo told it is a nightly, for
+        // `--compile-time-deps`. Cargo then also takes an `[unstable]` table of the user's
+        // configuration at its word, and `checksum-freshness` hands rustc a `-Z` flag the
+        // stable rustc refuses, so that no build script runs.
+        extra_env: [("CARGO_UNSTABLE_CHECKSUM_FRESHNESS".to_owned(), Some("false".to_owned()))]
+            .into_iter()
+            .collect(),
         ..Default::default()
     }
 }
