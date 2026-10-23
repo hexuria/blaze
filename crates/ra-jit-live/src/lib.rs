@@ -24,7 +24,7 @@
 //!
 //! macOS on AArch64 and Linux on x86-64; elsewhere [`Live::start`] says so.
 
-use std::{fmt, path::PathBuf, sync::OnceLock, time::Duration};
+use std::{fmt, path::PathBuf, sync::{Mutex, OnceLock}, time::Duration};
 
 pub mod format;
 
@@ -128,6 +128,36 @@ impl Live {
             all(target_os = "linux", target_arch = "x86_64")
         )))]
         drop(told);
+    }
+}
+
+/// Named addresses every generation of a program's code finds the same way.
+///
+/// A `static` in a crate the daemon edits is a trap: a local one has no name
+/// the patch can match, so each patch emits a private copy of it and the new
+/// code sees a fresh object; a named one is matched but written back to its
+/// initializer on every apply. The state a live program keeps — a game, a
+/// handle to runtime objects — has to live somewhere patches never rewrite,
+/// which is here: this crate's functions are linked into the program and are
+/// never part of a patch, so its `static` is only ever the executable's one.
+///
+/// `anchor(name, init)` returns the same pointer to every caller, every
+/// patch generation: the first caller's `init` runs (on the caller's behalf,
+/// with its context — a signal made here is owned by whoever asked first),
+/// and the `usize` it makes — usually a `Box::leak`ed address — is stored
+/// under `name` for the life of the process. `init` is a `fn`, not a
+/// closure, so this function stays one symbol the patch resolves to the
+/// executable's own; a generic or a closure would be emitted per callsite.
+static ANCHORS: Mutex<Vec<(&'static str, usize)>> = Mutex::new(Vec::new());
+
+pub fn anchor(name: &'static str, init: fn() -> usize) -> usize {
+    let mut anchors = ANCHORS.lock().unwrap();
+    if let Some(&(_, at)) = anchors.iter().find(|&&(n, _)| n == name) {
+        at
+    } else {
+        let at = init();
+        anchors.push((name, at));
+        at
     }
 }
 
