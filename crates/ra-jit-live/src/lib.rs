@@ -23,7 +23,9 @@
 //! did, for the program to show. `RA_JIT_TIER=off` in the program's environment turns the
 //! sampling off.
 //!
-//! macOS on AArch64, and Linux and Windows on x86-64; elsewhere [`Live::start`] says so.
+//! macOS on AArch64, the iOS simulator on AArch64 (a simulator process is a macOS one; a
+//! device has no writable+executable pages), and Linux and Windows on x86-64; elsewhere
+//! [`Live::start`] says so.
 
 use std::{fmt, path::PathBuf, sync::OnceLock, time::Duration};
 
@@ -31,9 +33,15 @@ pub mod format;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "ios", target_abi = "sim")
+))]
 mod macos;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "ios", target_abi = "sim")
+))]
 mod sample;
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;
@@ -84,7 +92,10 @@ impl fmt::Display for Outcome {
 
 /// A program that takes edits while it runs.
 pub struct Live {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "ios", target_abi = "sim")
+    ))]
     inner: macos::Live,
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     inner: linux::Live,
@@ -95,14 +106,20 @@ pub struct Live {
 impl Live {
     /// Sets aside room for edits next to the program's code and starts watching for them.
     pub fn start() -> Result<Live, String> {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "ios", target_abi = "sim")
+        ))]
         return macos::Live::start().map(|inner| Live { inner });
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         return linux::Live::start().map(|inner| Live { inner });
         #[cfg(all(windows, target_arch = "x86_64"))]
         return windows::Live::start().map(|inner| Live { inner });
         #[cfg(not(any(
-            all(target_os = "macos", target_arch = "aarch64"),
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "ios", target_abi = "sim")
+            ),
             all(target_os = "linux", target_arch = "x86_64"),
             all(windows, target_arch = "x86_64")
         )))]
@@ -111,14 +128,20 @@ impl Live {
 
     /// Applies the newest patch that came in since the last call, if any.
     pub fn poll(&mut self) -> Option<Outcome> {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "ios", target_abi = "sim")
+        ))]
         return self.inner.poll();
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         return self.inner.poll();
         #[cfg(all(windows, target_arch = "x86_64"))]
         return self.inner.poll();
         #[cfg(not(any(
-            all(target_os = "macos", target_arch = "aarch64"),
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "ios", target_abi = "sim")
+            ),
             all(target_os = "linux", target_arch = "x86_64"),
             all(windows, target_arch = "x86_64")
         )))]
@@ -130,14 +153,20 @@ impl Live {
     /// can change between any two calls; one of many functions that work together can be
     /// in the middle of a frame when some of them do.
     pub fn apply_as_they_come(self, told: impl FnMut(Outcome) + Send + 'static) {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "ios", target_abi = "sim")
+        ))]
         self.inner.apply_as_they_come(told);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         self.inner.apply_as_they_come(told);
         #[cfg(all(windows, target_arch = "x86_64"))]
         self.inner.apply_as_they_come(told);
         #[cfg(not(any(
-            all(target_os = "macos", target_arch = "aarch64"),
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "ios", target_abi = "sim")
+            ),
             all(target_os = "linux", target_arch = "x86_64"),
             all(windows, target_arch = "x86_64")
         )))]
