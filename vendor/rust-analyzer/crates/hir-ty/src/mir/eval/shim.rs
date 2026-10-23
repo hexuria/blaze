@@ -617,7 +617,8 @@ impl<'db> Evaluator<'db> {
                         _ => unreachable!(),
                     }
                 }
-                "pow" | "minnum" | "maxnum" | "copysign" => {
+                "pow" | "minnum" | "maxnum" | "copysign" | "minimum" | "maximum"
+                | "minimum_number_nsz_" | "maximum_number_nsz_" => {
                     let [arg1, arg2] = args else {
                         return Err(MirEvalError::InternalError(
                             "f64 intrinsic signature doesn't match fn (f64, f64) -> f64".into(),
@@ -627,8 +628,19 @@ impl<'db> Evaluator<'db> {
                     let arg2 = from_bytes!(f64, arg2.get(self)?);
                     match name {
                         "pow" => arg1.powf(arg2),
-                        "minnum" => arg1.min(arg2),
-                        "maxnum" => arg1.max(arg2),
+                        // `minnum`/`maxnum` and the `*_number_nsz_` names of
+                        // `f64::min`/`max` are IEEE minimumNumber/maximumNumber:
+                        // a NaN operand gives the other one, equal signed zeros
+                        // may return either.
+                        "minnum" | "minimum_number_nsz_" => arg1.min(arg2),
+                        "maxnum" | "maximum_number_nsz_" => arg1.max(arg2),
+                        // IEEE minimum/maximum, NaN propagates.
+                        "minimum" => {
+                            if arg1.is_nan() { arg1 } else if arg2.is_nan() { arg2 } else { arg1.min(arg2) }
+                        }
+                        "maximum" => {
+                            if arg1.is_nan() { arg1 } else if arg2.is_nan() { arg2 } else { arg1.max(arg2) }
+                        }
                         "copysign" => arg1.copysign(arg2),
                         _ => unreachable!(),
                     }
@@ -690,7 +702,8 @@ impl<'db> Evaluator<'db> {
                         _ => unreachable!(),
                     }
                 }
-                "pow" | "minnum" | "maxnum" | "copysign" => {
+                "pow" | "minnum" | "maxnum" | "copysign" | "minimum" | "maximum"
+                | "minimum_number_nsz_" | "maximum_number_nsz_" => {
                     let [arg1, arg2] = args else {
                         return Err(MirEvalError::InternalError(
                             "f32 intrinsic signature doesn't match fn (f32, f32) -> f32".into(),
@@ -700,8 +713,19 @@ impl<'db> Evaluator<'db> {
                     let arg2 = from_bytes!(f32, arg2.get(self)?);
                     match name {
                         "pow" => arg1.powf(arg2),
-                        "minnum" => arg1.min(arg2),
-                        "maxnum" => arg1.max(arg2),
+                        // `minnum`/`maxnum` and the `*_number_nsz_` names of
+                        // `f32::min`/`max` are IEEE minimumNumber/maximumNumber:
+                        // a NaN operand gives the other one, equal signed zeros
+                        // may return either.
+                        "minnum" | "minimum_number_nsz_" => arg1.min(arg2),
+                        "maxnum" | "maximum_number_nsz_" => arg1.max(arg2),
+                        // IEEE minimum/maximum, NaN propagates.
+                        "minimum" => {
+                            if arg1.is_nan() { arg1 } else if arg2.is_nan() { arg2 } else { arg1.min(arg2) }
+                        }
+                        "maximum" => {
+                            if arg1.is_nan() { arg1 } else if arg2.is_nan() { arg2 } else { arg1.max(arg2) }
+                        }
                         "copysign" => arg1.copysign(arg2),
                         _ => unreachable!(),
                     }
