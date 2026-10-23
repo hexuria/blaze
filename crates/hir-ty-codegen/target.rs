@@ -152,14 +152,18 @@ impl Target {
             Some("wasm32") => Arch::Wasm32,
             _ => return Err(format!("ra-jit emits no code for the architecture of {triple}")),
         };
-        let system = parts.find(|part| matches!(*part, "linux" | "darwin" | "windows"));
+        let system = parts.find(|part| matches!(*part, "linux" | "darwin" | "windows" | "ios"));
         // Cranelift's names for the C convention: `SystemV` is the psABI's on x86-64 and
         // AAPCS64 on AArch64, which Apple's differs from in what goes on the stack.
         let (object_format, unwind, call_conv) = match (system, arch) {
             // The calling convention is the one of the ISA whose settings are borrowed.
             (_, Arch::Wasm32) => (ObjectFormat::Wasm, UnwindFormat::None, CallConv::SystemV),
             (Some("linux"), _) => (ObjectFormat::Elf, UnwindFormat::EhFrame, CallConv::SystemV),
-            (Some("darwin"), Arch::Aarch64) => {
+            // iOS is darwin to codegen: aarch64-apple-ios(-sim) binaries are arm64 Mach-O,
+            // EH-frame unwinding and Apple's AAPCS64, exactly as -apple-darwin's. The
+            // simulator process is a macOS one, where the splice works; a device has no
+            // writable+executable pages for it anyway.
+            (Some("darwin") | Some("ios"), Arch::Aarch64) => {
                 (ObjectFormat::MachO, UnwindFormat::EhFrame, CallConv::AppleAarch64)
             }
             (Some("windows"), Arch::X86_64) if triple.ends_with("-msvc") => {
