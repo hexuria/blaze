@@ -314,7 +314,14 @@ impl Flavor {
             return args.iter().any(|it| it.starts_with(OUT)).then_some(Flavor::Msvc);
         }
         let of_cc = args.iter().any(|it| it == "-o") && !args.iter().any(|it| it == "-flavor");
-        let flavor = match args.iter().any(|it| it == "-arch") {
+        // Apple links are driven two ways: `-arch arm64 ...` on macOS, and
+        // clang's `-target arm64-apple-ios14.0.0-simulator` (or `...-apple-darwin`)
+        // on iOS and its simulator — both take Apple's linker and its flags.
+        let apple = args.iter().any(|it| it == "-arch")
+            || args.windows(2).any(|it| it[0] == "-target" && it[1].contains("-apple-"))
+            || args.iter().any(|it| it.starts_with("-target=") && it.contains("-apple-"))
+            || args.iter().any(|it| it.starts_with("-mtargetos="));
+        let flavor = match apple {
             true => Flavor::Apple,
             false => Flavor::Cc,
         };
