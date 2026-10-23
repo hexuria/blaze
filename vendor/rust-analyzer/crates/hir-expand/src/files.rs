@@ -124,7 +124,13 @@ impl ErasedAstId {
         self.to_ptr(db).text_range()
     }
     pub fn to_ptr(&self, db: &dyn SourceDatabase) -> SyntaxNodePtr {
-        self.file_id.ast_id_map(db).get_erased(self.value)
+        match self.file_id.ast_id_map(db).try_get_erased(self.value) {
+            Some(it) => it,
+            None => panic!(
+                "ast id {:?} not in map of file {:?} (call {:?})",
+                self.value, self.file_id, self.file_id.macro_file()
+            ),
+        }
     }
 }
 
