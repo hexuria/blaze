@@ -1822,6 +1822,17 @@ impl Base {
         queue.extend(added.iter().copied().filter(|&func| queued.insert(func)));
         queue.extend(cg.wanted.drain(..).filter(|&func| queued.insert(func)));
         let mut next = 0;
+        // A root the base never exported under a rustc symbol lives in it as an instance
+        // (the start shim's and each other's calls resolved to one). Its symbol is replaced
+        // with the instance's in `changed_instances`; no root of its own is emitted.
+        let instanced = |root: &FunctionId| {
+            !self.rustc
+                && !self.homes.root.contains_key(root)
+                && self.instances.keys().any(|it| {
+                    matches!(it.def, InstanceDef::Fn(func) if func == *root)
+                        && it.args.as_ref().is_empty()
+                })
+        };
         loop {
             while let Some(&root) = queue.get(next) {
                 next += 1;
@@ -1832,8 +1843,9 @@ impl Base {
                     Ok(_) => {}
                     // As in a full build, a function added to a crate whose symbols are
                     // rustc's has none to be put in the object under: what calls it has a
-                    // copy of its own.
-                    Err(e) if e.no_symbol() && added.contains(&root) => {}
+                    // copy of its own. A root the base carries only as an instance is
+                    // replaced in `changed_instances`, not root-emitted, either.
+                    Err(e) if e.no_symbol() && (added.contains(&root) || instanced(&root)) => {}
                     Err(_) => return Ok(Err("a root can't be compiled")),
                 }
                 queue.extend(cg.wanted.drain(..).filter(|&func| queued.insert(func)));

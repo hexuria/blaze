@@ -1299,6 +1299,12 @@ impl SymbolResolver for Resolver<'_> {
     }
 
     fn closure(&self, owner: FunctionId, expr: hir_def::hir::ExprId) -> Option<String> {
+        let path = self.closure_path(owner, expr)?;
+        let private = || self.rustcs()?.private(&path);
+        self.table.get(&path).or_else(private).map(str::to_owned)
+    }
+
+    fn closure_path(&self, owner: FunctionId, expr: hir_def::hir::ExprId) -> Option<String> {
         let source_map = &Body::with_source_map(self.db, owner.into()).1;
         let written = source_map.expr_syntax(expr).ok()?;
         let sema = self.sema();
@@ -1322,8 +1328,7 @@ impl SymbolResolver for Resolver<'_> {
             path.push_str("::");
             path.push_str(segment);
         }
-        let private = || self.rustcs()?.private(&path);
-        self.table.get(&path).or_else(private).map(str::to_owned)
+        Some(path)
     }
 
     fn makers(&self, function: &str) -> Vec<u64> {
