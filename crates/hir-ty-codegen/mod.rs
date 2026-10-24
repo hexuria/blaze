@@ -289,6 +289,11 @@ pub trait SymbolResolver {
     fn closure(&self, _owner: FunctionId, _expr: hir_def::hir::ExprId) -> Option<String> {
         None
     }
+    /// The path rustc's demangled symbols spell the closure type at `expr` in the body of
+    /// `owner` with: `owner`'s path, then `{closure#N}` for each closure between them.
+    fn closure_path(&self, _owner: FunctionId, _expr: hir_def::hir::ExprId) -> Option<String> {
+        None
+    }
     /// The build is no patch of what rustc linked but one in full, which is linked: what
     /// only that executable has is not to be named.
     fn in_full(&self) {}
@@ -1675,6 +1680,16 @@ impl<'db> Spelling<'_, 'db> {
                     write!(path, " -> {}", self.symbol_type(sig.output())?).ok()?;
                 }
                 path
+            }
+            // A closure type demangles to `owner::{closure#N}` — what `symbols.closure_path`
+            // spells; without it `<{closure} as Trait>::method` cannot name rustc's copy.
+            TyKind::Closure(id, _) => {
+                let loc = id.0.loc(db);
+                let InferBodyId::DefWithBodyId(DefWithBodyId::FunctionId(owner)) = loc.owner
+                else {
+                    return None;
+                };
+                self.symbols.closure_path(owner, loc.expr)?
             }
             TyKind::Dynamic(bounds, _) => {
                 let principal = bounds.principal()?.no_bound_vars()?;
@@ -4135,8 +4150,9 @@ fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
         let Some(compiled) = ctx.compiled_code() else {
             return Err("no compiled code".to_owned());
         };
-        // Relocations against the function itself get its id when it is stitched.
-        let own = FuncId::from_u32(u32::MAX);
+        // Relocations against the function itself get its id when it is stitched. One below
+        // `u32::MAX` — `from_u32(u32::MAX)` asserts the reserved value away in debug builds.
+        let own = FuncId::from_u32(u32::MAX - 1);
         Ok(Code {
             signature: ctx.func.signature.clone(),
             bytes: compiled.buffer.data().to_vec(),
@@ -6021,6 +6037,17 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             if let InstanceDef::Fn(func) = def
                 && let Some(symbol) = link_name(self.db, func)
                 && !symbol.starts_with("llvm.")
+            {
+                return self.import(&symbol, sig);
+            }
+            // A required trait method has no body of its own; the impl's does, which rustc
+            // emits under the instance's path (`<T as Trait>::f`, like any method). Its copy
+            // is callable under the same rules as any other rustc copy.
+            if let InstanceDef::Fn(func) = def
+                && let Some(symbol) = self
+                    .instance_path(func, args.clone())
+                    .and_then(|path| self.symbols.path(&path))
+                    .and_then(|symbol| self.rustc_copy(symbol, instance.checked))
             {
                 return self.import(&symbol, sig);
             }

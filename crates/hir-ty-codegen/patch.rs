@@ -1811,12 +1811,23 @@ impl Base {
         let mut queue = changed_roots;
         queue.extend(cg.wanted.drain(..).filter(|&func| queued.insert(func)));
         let mut next = 0;
+        // A root the base never exported under a rustc symbol lives in it as an instance
+        // (the start shim's and each other's calls resolved to one). Its symbol is replaced
+        // with the instance's in `changed_instances`; no root of its own is emitted.
+        let instanced = |root: &FunctionId| {
+            !self.rustc
+                && !self.homes.root.contains_key(root)
+                && self.instances.keys().any(|it| {
+                    matches!(it.def, InstanceDef::Fn(func) if func == *root)
+                        && it.args.as_ref().is_empty()
+                })
+        };
         loop {
             while let Some(&root) = queue.get(next) {
                 next += 1;
                 if denied.contains(&root)
                     || known.left.contains(&root)
-                    || cg.define_function(root).is_err()
+                    || (!instanced(&root) && cg.define_function(root).is_err())
                 {
                     return Ok(Err("a root can't be compiled"));
                 }
