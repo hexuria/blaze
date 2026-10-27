@@ -185,10 +185,10 @@ pub fn tiers() -> Option<format::Tiers> {
 /// writing it: the daemon builds from that text at once and a program that runs takes the
 /// patch. The answer is the daemon's, as `cargo ra-jit build` prints it: `ok patch=...
 /// functions=N files=N ms=N`, `ok unchanged`, or why the edit is not built. The file itself
-/// is the editor's to write when it likes; the daemon sees that it has that text already.
+/// is the editor's to write when it likes; the daemon sees that it has that text already. A socket
+/// served by another user is refused; nothing is sent to it.
 #[cfg(unix)]
 pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
-    use std::io::{BufRead as _, Write as _};
     let socket = daemon_socket().ok_or("no home directory to find the daemon in")?;
     let path = std::path::absolute(path).map_err(|it| format!("{}: {it}", path.display()))?;
     let path = path.to_str().ok_or("a path that is not UTF-8")?;
@@ -198,10 +198,26 @@ pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
     line.push('\t');
     format::escape(text, &mut line);
     line.push('\n');
-    let mut stream = std::os::unix::net::UnixStream::connect(&socket)
+
+    ask(&socket, &line, user())
+}
+
+#[cfg(unix)]
+fn ask(socket: &std::path::Path, line: &str, user: u32) -> Result<String, String> {
+    use std::io::{BufRead as _, Write as _};
+
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|it| format!("no daemon at {}: {it}", socket.display()))?;
-    stream.write_all(line.as_bytes()).map_err(|it| format!("sending the edit: {it}"))?;
+    let peer =
+        peer_user(&stream).map_err(|it| format!("asking who serves {}: {it}", socket.display()))?;
+    if peer != user {
+        return Err(format!(
+            "{} is served by user {peer}, not this one: the edit is not sent",
+            socket.display()
+        ));
+    }
     let mut reply = String::new();
+    stream.write_all(line.as_bytes()).map_err(|it| format!("sending the edit: {it}"))?;
     std::io::BufReader::new(stream)
         .read_line(&mut reply)
         .map_err(|it| format!("reading the daemon's answer: {it}"))?;
@@ -212,6 +228,39 @@ pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
         Some(why) => Err(format::unescape(why)),
         None => Err(reply.to_owned()),
     }
+}
+
+#[cfg(unix)]
+fn user() -> u32 {
+    // SAFETY: `geteuid` takes nothing and can't fail.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn peer_user(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd as _;
+    let mut peer = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `peer` is a `ucred` and `len` its size, which is what `SO_PEERCRED` writes.
+    let failed = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut peer).cast(),
+            &raw mut len,
+        )
+    };
+    if failed != 0 { Err(std::io::Error::last_os_error()) } else { Ok(peer.uid) }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn peer_user(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd as _;
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: both point at integers of the types `getpeereid` writes.
+    let failed = unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) };
+    if failed != 0 { Err(std::io::Error::last_os_error()) } else { Ok(uid) }
 }
 
 /// Where the daemon of this user listens, as ra-jit finds it: in `RA_JIT_HOME`, else in
@@ -226,4 +275,68 @@ fn daemon_socket() -> Option<std::path::PathBuf> {
         (None, None, None) => return None,
     };
     Some(home.join("daemon.sock"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{ask, peer_user, user};
+    use std::{
+        io::{BufRead as _, Read as _, Write as _},
+        os::unix::net::{UnixListener, UnixStream},
+    };
+
+    fn socket(name: &str) -> (std::path::PathBuf, UnixListener) {
+        let dir = std::env::temp_dir().join(format!("rjl-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let listener = UnixListener::bind(dir.join("daemon.sock")).unwrap();
+        (dir, listener)
+    }
+
+    #[test]
+    fn refuses_a_daemon_of_another_user() {
+        let (dir, listener) = socket("refuse");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut received = [0; 1];
+            let size = stream.read(&mut received).unwrap();
+            received[..size].to_vec()
+        });
+
+        let error =
+            ask(&dir.join("daemon.sock"), "edit\tx\ty\n", user().wrapping_add(1)).unwrap_err();
+        assert!(error.contains("not this one"), "{error}");
+        assert!(server.join().unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn asks_a_daemon_of_this_user() {
+        let (dir, listener) = socket("asks");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let peer = peer_user(&stream).unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            stream.write_all(b"ok unchanged\n").unwrap();
+            (line, peer)
+        });
+
+        assert_eq!(ask(&dir.join("daemon.sock"), "edit\tx\ty\n", user()).unwrap(), "ok unchanged");
+        let (line, peer) = server.join().unwrap();
+        assert_eq!(line, "edit\tx\ty\n");
+        assert_eq!(peer, user());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn peer_user_of_a_connected_pair_is_this_user() {
+        let (dir, listener) = socket("peer");
+        let server = std::thread::spawn(move || listener.accept().unwrap().0);
+        let stream = UnixStream::connect(dir.join("daemon.sock")).unwrap();
+        assert_eq!(peer_user(&stream).unwrap(), user());
+        drop(stream);
+        drop(server.join().unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

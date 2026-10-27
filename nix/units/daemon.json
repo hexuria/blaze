@@ -1,7 +1,7 @@
 {
  "dir": ".",
  "inputs": {
-  "Cargo.lock": "21d12405cfe581ffb43c6141de46b3cb99e65759c33b6d885bf4976d8698aa3f",
+  "Cargo.lock": "e2ccbcb0a8117a1984719ccdd68ffd8301722235e6cf908f8831dce360481123",
   "Cargo.toml": "7b956914a2c3ab5834dad4d1980b7d2f522db08b798501b37381fe1752a20cbc"
  },
  "packages": {
@@ -783,6 +783,23 @@
    "rust_version": "1.101",
    "source": {
     "dir": "crates/blaze-build-script",
+    "kind": "path"
+   },
+   "version": "0.1.0"
+  },
+  "blaze-fmt@0.1.0": {
+   "authors": "blaze contributors",
+   "description": "rustfmt owned by blaze: rustfmt's formatting over rust-analyzer's syntax trees, with no rustc crates",
+   "homepage": "",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "blaze-fmt",
+   "readme": "",
+   "repository": "https://github.com/indexable-inc/blaze",
+   "rust_version": "1.101",
+   "source": {
+    "dir": "crates/blaze-fmt",
     "kind": "path"
    },
    "version": "0.1.0"
@@ -1976,6 +1993,23 @@
     "kind": "registry"
    },
    "version": "1.6.1"
+  },
+  "diff@0.1.13": {
+   "authors": "Utkarsh Kukreti <utkarshkukreti@gmail.com>",
+   "description": "An LCS based slice and string diffing implementation.",
+   "homepage": "https://github.com/utkarshkukreti/diff.rs",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "diff",
+   "readme": "README.md",
+   "repository": "https://github.com/utkarshkukreti/diff.rs",
+   "rust_version": "",
+   "source": {
+    "checksum": "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8",
+    "kind": "registry"
+   },
+   "version": "0.1.13"
   },
   "digest@0.10.7": {
    "authors": "RustCrypto Developers",
@@ -7314,6 +7348,40 @@
     "kind": "registry"
    },
    "version": "0.1.4"
+  },
+  "unicode-segmentation@1.12.0": {
+   "authors": "kwantam <kwantam@gmail.com>:Manish Goregaokar <manishsmail@gmail.com>",
+   "description": "This crate provides Grapheme Cluster, Word and Sentence boundaries\naccording to Unicode Standard Annex #29 rules.\n",
+   "homepage": "https://github.com/unicode-rs/unicode-segmentation",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "unicode-segmentation",
+   "readme": "README.md",
+   "repository": "https://github.com/unicode-rs/unicode-segmentation",
+   "rust_version": "",
+   "source": {
+    "checksum": "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493",
+    "kind": "registry"
+   },
+   "version": "1.12.0"
+  },
+  "unicode-width@0.1.14": {
+   "authors": "kwantam <kwantam@gmail.com>:Manish Goregaokar <manishsmail@gmail.com>",
+   "description": "Determine displayed width of `char` and `str` types\naccording to Unicode Standard Annex #11 rules.\n",
+   "homepage": "https://github.com/unicode-rs/unicode-width",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "unicode-width",
+   "readme": "README.md",
+   "repository": "https://github.com/unicode-rs/unicode-width",
+   "rust_version": "",
+   "source": {
+    "checksum": "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af",
+    "kind": "registry"
+   },
+   "version": "0.1.14"
   },
   "unicode-width@0.2.2": {
    "authors": "kwantam <kwantam@gmail.com>:Manish Goregaokar <manishsmail@gmail.com>",
@@ -20740,6 +20808,10 @@
        "name": "pdb"
       },
       {
+       "i": 294,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 299,
        "name": "project_model"
       },
@@ -21043,6 +21115,10 @@
       {
        "i": 282,
        "name": "pdb"
+      },
+      {
+       "i": 294,
+       "name": "proc_macro_api"
       },
       {
        "i": 299,
@@ -21350,6 +21426,10 @@
        "name": "pdb"
       },
       {
+       "i": 294,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 299,
        "name": "project_model"
       },
@@ -21653,6 +21733,10 @@
       {
        "i": 282,
        "name": "pdb"
+      },
+      {
+       "i": 294,
+       "name": "proc_macro_api"
       },
       {
        "i": 299,
@@ -21960,6 +22044,10 @@
        "name": "pdb"
       },
       {
+       "i": 294,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 299,
        "name": "project_model"
       },
@@ -22263,6 +22351,10 @@
       {
        "i": 282,
        "name": "pdb"
+      },
+      {
+       "i": 294,
+       "name": "proc_macro_api"
       },
       {
        "i": 299,
@@ -22587,7 +22679,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 221,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -40160,6 +40257,10 @@
        "name": "pdb"
       },
       {
+       "i": 297,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 302,
        "name": "project_model"
       },
@@ -40463,6 +40564,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 297,
+       "name": "proc_macro_api"
       },
       {
        "i": 302,
@@ -40770,6 +40875,10 @@
        "name": "pdb"
       },
       {
+       "i": 297,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 302,
        "name": "project_model"
       },
@@ -41073,6 +41182,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 297,
+       "name": "proc_macro_api"
       },
       {
        "i": 302,
@@ -41380,6 +41493,10 @@
        "name": "pdb"
       },
       {
+       "i": 297,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 302,
        "name": "project_model"
       },
@@ -41683,6 +41800,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 297,
+       "name": "proc_macro_api"
       },
       {
        "i": 302,
@@ -42007,7 +42128,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 220,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -59440,6 +59566,10 @@
        "name": "pdb"
       },
       {
+       "i": 295,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 300,
        "name": "project_model"
       },
@@ -59743,6 +59873,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 295,
+       "name": "proc_macro_api"
       },
       {
        "i": 300,
@@ -60050,6 +60184,10 @@
        "name": "pdb"
       },
       {
+       "i": 295,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 300,
        "name": "project_model"
       },
@@ -60353,6 +60491,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 295,
+       "name": "proc_macro_api"
       },
       {
        "i": 300,
@@ -60660,6 +60802,10 @@
        "name": "pdb"
       },
       {
+       "i": 295,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 300,
        "name": "project_model"
       },
@@ -60963,6 +61109,10 @@
       {
        "i": 283,
        "name": "pdb"
+      },
+      {
+       "i": 295,
+       "name": "proc_macro_api"
       },
       {
        "i": 300,
@@ -61287,7 +61437,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 222,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -78887,6 +79042,10 @@
        "name": "pdb"
       },
       {
+       "i": 298,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 303,
        "name": "project_model"
       },
@@ -79190,6 +79349,10 @@
       {
        "i": 284,
        "name": "pdb"
+      },
+      {
+       "i": 298,
+       "name": "proc_macro_api"
       },
       {
        "i": 303,
@@ -79497,6 +79660,10 @@
        "name": "pdb"
       },
       {
+       "i": 298,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 303,
        "name": "project_model"
       },
@@ -79800,6 +79967,10 @@
       {
        "i": 284,
        "name": "pdb"
+      },
+      {
+       "i": 298,
+       "name": "proc_macro_api"
       },
       {
        "i": 303,
@@ -80107,6 +80278,10 @@
        "name": "pdb"
       },
       {
+       "i": 298,
+       "name": "proc_macro_api"
+      },
+      {
        "i": 303,
        "name": "project_model"
       },
@@ -80410,6 +80585,10 @@
       {
        "i": 284,
        "name": "pdb"
+      },
+      {
+       "i": 298,
+       "name": "proc_macro_api"
       },
       {
        "i": 303,
@@ -80734,7 +80913,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 221,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
