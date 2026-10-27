@@ -287,7 +287,7 @@ mod tests {
     };
 
     fn socket(name: &str) -> (std::path::PathBuf, UnixListener) {
-        let dir = std::env::temp_dir().join(format!("ra-jit-live-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rjl-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         let listener = UnixListener::bind(dir.join("daemon.sock")).unwrap();
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn refuses_a_daemon_of_another_user() {
-        let (dir, listener) = socket("refuses-a-daemon-of-another-user");
+        let (dir, listener) = socket("refuse");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn asks_a_daemon_of_this_user() {
-        let (dir, listener) = socket("asks-a-daemon-of-this-user");
+        let (dir, listener) = socket("asks");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let peer = peer_user(&stream).unwrap();
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn peer_user_of_a_connected_pair_is_this_user() {
-        let (dir, listener) = socket("peer-user-of-a-connected-pair");
+        let (dir, listener) = socket("peer");
         let server = std::thread::spawn(move || listener.accept().unwrap().0);
         let stream = UnixStream::connect(dir.join("daemon.sock")).unwrap();
         assert_eq!(peer_user(&stream).unwrap(), user());

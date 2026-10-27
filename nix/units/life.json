@@ -1,7 +1,7 @@
 {
  "dir": "demo/life",
  "inputs": {
-  "Cargo.lock": "bdfafc87cf24e4db1b3b554d9927d0676403a3f2adb5fe94ed849264da8a9dc8",
+  "Cargo.lock": "3cf970923cda2bfe9097215773d2e9ed3c4966d7344e3f0ad9fe51c6744082ef",
   "Cargo.toml": "61f1f3e9bcac3bf111d5e317606cd6cdfa5d792eb7adc70521e442cb3df2de18"
  },
  "packages": {
@@ -8469,7 +8469,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 61,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -12758,7 +12763,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 69,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -18624,7 +18634,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 61,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
@@ -22913,7 +22928,12 @@
     },
     {
      "crate_type": "lib",
-     "deps": [],
+     "deps": [
+      {
+       "i": 69,
+       "name": "libc"
+      }
+     ],
      "edition": "2024",
      "features": [],
      "kind": "lib",
