@@ -15836,9 +15836,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let done = body(self);
         self.inner_pad = enclosing;
         done?;
-        let Some(after) = self.builder.current_block() else {
+        if self.builder.current_block().is_none() {
             unsupported!("guarded call without a block to return to");
-        };
+        }
+        // Cranelift wants a block finished before it switches away from it: this one ends here,
+        // the code after the call goes on in `after`.
+        let after = self.builder.create_block();
+        self.builder.ins().jump(after, &[]);
         self.builder.switch_to_block(pad);
         let exception = self.builder.block_params(pad)[0];
         self.in_cleanup = true;
@@ -16358,9 +16362,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
         self.inner_pad = enclosing;
         dropped?;
-        let Some(after) = self.builder.current_block() else {
+        if self.builder.current_block().is_none() {
             unsupported!("drop without a block to return to");
-        };
+        }
+        // The pads are built before the code after the drops, and Cranelift wants a block
+        // finished before it switches away from it: this one ends here, the rest goes on in `after`.
+        let after = self.builder.create_block();
+        self.builder.ins().jump(after, &[]);
         self.in_cleanup = true;
         let mut cleaned = Ok(());
         for at in 1..count {
