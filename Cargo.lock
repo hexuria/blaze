@@ -3275,6 +3275,9 @@ version = "0.1.0"
 [[package]]
 name = "ra-jit-live"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "ra-jit-store"
