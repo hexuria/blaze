@@ -38,6 +38,8 @@ mod linux;
     all(target_os = "ios", target_abi = "sim")
 ))]
 mod macos;
+#[cfg(unix)]
+mod peer;
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "ios", target_abi = "sim")
@@ -227,6 +229,7 @@ pub fn tiers() -> Option<format::Tiers> {
 /// patch. The answer is the daemon's, as `cargo ra-jit build` prints it: `ok patch=...
 /// functions=N files=N ms=N`, `ok unchanged`, or why the edit is not built. The file itself
 /// is the editor's to write when it likes; the daemon sees that it has that text already.
+/// On Unix a socket another user serves is refused, and nothing is sent to it.
 #[cfg(any(unix, all(windows, target_arch = "x86_64")))]
 pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
     use std::io::{BufRead as _, Write as _};
@@ -240,10 +243,10 @@ pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
     format::escape(text, &mut line);
     line.push('\n');
     #[cfg(unix)]
-    let stream = std::os::unix::net::UnixStream::connect(&socket);
+    let mut stream = peer::connect(&socket, peer::user())?;
     #[cfg(windows)]
-    let stream = windows::Socket::connect(&socket);
-    let mut stream = stream.map_err(|it| format!("no daemon at {}: {it}", socket.display()))?;
+    let mut stream = windows::Socket::connect(&socket)
+        .map_err(|it| format!("no daemon at {}: {it}", socket.display()))?;
     stream.write_all(line.as_bytes()).map_err(|it| format!("sending the edit: {it}"))?;
     let mut reply = String::new();
     std::io::BufReader::new(stream)

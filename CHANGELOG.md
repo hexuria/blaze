@@ -1001,6 +1001,10 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- `ra_jit_live::edit` sends an edit only to a daemon socket this user serves: on Unix it asks
+  who is at the other end (`getpeereid`, `SO_PEERCRED` on Linux) and refuses another user's
+  `daemon.sock` before writing the path and source text, as the daemon already refuses
+  another user's clients.
 - The borrow checker: lifetime elision counts none of the impl's lifetimes in a parameter
   that writes `Self`, as rustc counts only what a parameter's type writes or elides, so
   `fn store(self, db: &dyn Db) -> &Store` in `impl Id<'_>` returns a borrow of `db`. It
