@@ -283,7 +283,6 @@ mod tests {
     use std::{
         io::{BufRead as _, Read as _, Write as _},
         os::unix::net::{UnixListener, UnixStream},
-        time::Duration,
     };
 
     fn socket(name: &str) -> (std::path::PathBuf, UnixListener) {
@@ -299,10 +298,9 @@ mod tests {
         let (dir, listener) = socket("refuse");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut received = Vec::new();
-            stream.read_to_end(&mut received).unwrap();
-            received
+            let mut received = [0; 1];
+            let size = stream.read(&mut received).unwrap();
+            received[..size].to_vec()
         });
 
         let error =
