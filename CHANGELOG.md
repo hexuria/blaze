@@ -862,6 +862,10 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- `ra_jit_live::edit` sends an edit only to a daemon socket this user serves: on Unix it asks
+  who is at the other end (`getpeereid`, `SO_PEERCRED` on Linux) and refuses another user's
+  `daemon.sock` before writing the path and source text, as the daemon already refuses
+  another user's clients.
 - `cargo install --git https://github.com/indexable-inc/blaze ra-jit` builds ra-jit
   ([#242](https://github.com/indexable-inc/blaze/issues/242), #293, by @gakonst). It failed
   before compiling anything: for a git source cargo checks that every package is a member of
