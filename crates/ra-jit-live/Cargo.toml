@@ -12,3 +12,6 @@ keywords = ["hot-reload", "live-reload", "jit", "compiler"]
 categories = ["development-tools"]
 
 [dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.172"
